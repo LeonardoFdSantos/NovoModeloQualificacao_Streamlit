@@ -4,9 +4,3 @@ scipy
 numpy
 pandas
 kaleido
-libgl1-mesa-glx
-libglib2.0-0
-libnss3
-libxss1
-libasound2
-libdbus-glib-1-2
