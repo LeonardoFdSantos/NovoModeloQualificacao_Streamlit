@@ -3,4 +3,4 @@ plotly
 scipy
 numpy
 pandas
-kaleido
+kaleido==0.2.1
