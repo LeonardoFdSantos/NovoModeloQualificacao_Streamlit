@@ -10,27 +10,27 @@ import pandas as pd
 
 # ===================== Configuração da Página =====================
 st.set_page_config(layout="wide", page_title="Analisador de Harmônicas T2F")
-st.title("Analisador Avançado de Qualidade de Energia (MATLAB/Python)")
+st.title("Analisador Avançado de Qualidade de Energia (5 Pontos)")
 
-# ===================== Constantes e Funções Auxiliares =====================
+# ===================== Constantes =====================
 F_FUNDAMENTAL = 60  # Hz
 PLOT_XLIM_FFT = [0, 1000]
-HARMONICOS_IMPARES = [3, 5, 7, 9, 11, 13, 15]  # Harmônicas para marcar nos gráficos
+HARMONICOS_IMPARES = [3, 5, 7, 9, 11, 13, 15]  # Para marcadores no espectro
+# Lista dos pontos de medição conforme salvos no MATLAB
+PONTOS = ['800', 'T2F', '818', '820', '822']
 
 
-# Função para encontrar a amplitude de uma frequência específica nos dados da FFT
+# ===================== Funções Auxiliares =====================
 def get_harmonic_amplitude(freq_array, amp_array, order, fund_freq=60):
+    """Encontra a amplitude de uma frequência específica."""
     target_freq = order * fund_freq
-    # Encontra o índice mais próximo da frequência alvo
     idx = (np.abs(freq_array - target_freq)).argmin()
     return amp_array[idx]
 
 
-# Função para calcular THD (Total Harmonic Distortion)
 def calculate_thd(freq_array, amp_array, fund_freq=60, max_freq=2000):
-    # Encontra amplitude fundamental
+    """Calcula THD (Total Harmonic Distortion) usando a definição padrão."""
     amp_h1 = get_harmonic_amplitude(freq_array, amp_array, 1, fund_freq)
-
     if amp_h1 == 0: return 0
 
     sum_squares = 0
@@ -43,73 +43,59 @@ def calculate_thd(freq_array, amp_array, fund_freq=60, max_freq=2000):
     return thd
 
 
-# Mapeamento de nomes para download
-FNAMES_MAP = {
-    'I800_T': 'Comparacao_I800_Tempo', 'I800_F': 'Comparacao_I800_FFT',
-    'V800_T': 'Comparacao_V800_Tempo', 'V800_F': 'Comparacao_V800_FFT',
-    'IT2F_T': 'Comparacao_IT2F_Tempo', 'IT2F_F': 'Comparacao_IT2F_FFT',
-    'VT2F_T': 'Comparacao_VT2F_Tempo', 'VT2F_F': 'Comparacao_VT2F_FFT',
-    'Bar_I_Pico': 'Bar_I800_Pico', 'Bar_I_THD': 'Bar_I800_THD',
-    'Bar_I_h3': 'Bar_I800_H3', 'Bar_I_h5': 'Bar_I800_H5',
-    'Bar_V_Pico': 'Bar_V800_Pico', 'Bar_V_THD': 'Bar_V800_THD'
-}
-
-
 # ===================== Função de Processamento =====================
 @st.cache_data
 def processar_arquivos(uploaded_files):
     numFiles = len(uploaded_files)
     colors = qualitative.Plotly
 
-    # Listas para armazenar dados
+    # 1. Inicialização Dinâmica das Estruturas de Dados
     legend_entries = []
 
-    # DataFrames para armazenar métricas de TODOS os arquivos
-    metrics_data = {
-        'Caso': [],
-        # Ponto 800 - Corrente
-        'I800_Pico': [], 'I800_THD': [], 'I800_H3': [], 'I800_H5': [], 'I800_H7': [],
-        # Ponto 800 - Tensão
-        'V800_Pico': [], 'V800_THD': [], 'V800_H3': [], 'V800_H5': [], 'V800_H7': [],
-        # Cores
-        'Cor': []
-    }
+    # Dicionário para armazenar métricas (colunas do DataFrame futuro)
+    # Estrutura: metrics_data['I800_Pico'] = [valor1, valor2...]
+    metrics_data = {'Caso': [], 'Cor': []}
 
-    # Dados para o gráfico de espectro completo (H1-H15)
-    spectrum_data = []
+    # Cria chaves para todas as métricas de todos os pontos
+    metricas_types = ['Pico', 'THD', 'H3', 'H5', 'H7']
+    for p in PONTOS:
+        for var in ['I', 'V']:  # Corrente e Tensão
+            for m in metricas_types:
+                metrics_data[f'{var}{p}_{m}'] = []
 
-    # --- Inicializa Figuras de Linha ---
+    spectrum_data = []  # Para o gráfico de espectro completo
+
+    # 2. Inicializa Figuras de Linha (Tempo e FFT) para todos os pontos
     line_figs = {}
-    pairs = [('I800', 'Corrente (I_800)'), ('V800', 'Tensão (V_800)'),
-             ('IT2F', 'Corrente (I_T2F)'), ('VT2F', 'Tensão (V_T2F)')]
 
-    for key, title_desc in pairs:
-        # Tempo
-        line_figs[f'{key}_T'] = go.Figure(layout=go.Layout(
-            title=f'Sinal no Tempo: {title_desc} - Fase A', xaxis_title='Tempo (s)',
-            yaxis_title='Amplitude'))
+    for p in PONTOS:
+        for var, label in [('I', 'Corrente'), ('V', 'Tensão')]:
+            key_root = f'{var}{p}'  # Ex: I800, VT2F
 
-        # FFT
-        line_figs[f'{key}_F'] = go.Figure(layout=go.Layout(
-            title=f'Espectro FFT: {title_desc} - Fase A', xaxis_title='Frequência (Hz)',
-            yaxis_title='Amplitude (dB)', xaxis_range=PLOT_XLIM_FFT))
+            # Figura no Tempo
+            line_figs[f'{key_root}_T'] = go.Figure(layout=go.Layout(
+                title=f'Sinal no Tempo: {label} ({var}_{p}) - Fase A',
+                xaxis_title='Tempo (s)', yaxis_title='Amplitude'))
 
-        # Adiciona linhas verticais para harmônicas ímpares
-        for h in HARMONICOS_IMPARES:
-            line_figs[f'{key}_F'].add_vline(x=h * F_FUNDAMENTAL, line_width=1, line_dash="dot",
-                                            line_color="gray", opacity=0.5)
-            # Adiciona anotação apenas para H3 e H5 para não poluir
-            if h in [3, 5]:
-                line_figs[f'{key}_F'].add_annotation(x=h * F_FUNDAMENTAL, y=0, text=f"H{h}",
-                                                     showarrow=False, yshift=10)
+            # Figura FFT
+            line_figs[f'{key_root}_F'] = go.Figure(layout=go.Layout(
+                title=f'Espectro FFT: {label} ({var}_{p}) - Fase A',
+                xaxis_title='Frequência (Hz)', yaxis_title='Amplitude (dB)',
+                xaxis_range=PLOT_XLIM_FFT))
 
-    # --- Loop Principal ---
+            # Adiciona linhas verticais para harmônicas
+            for h in HARMONICOS_IMPARES:
+                line_figs[f'{key_root}_F'].add_vline(x=h * F_FUNDAMENTAL, line_width=1, line_dash="dot",
+                                                     line_color="gray", opacity=0.5)
+
+    # --- Loop Principal de Arquivos ---
     for i, file in enumerate(uploaded_files):
         matFile = file.name
         currentColor = colors[i % len(colors)]
 
         try:
             data = sio.loadmat(io.BytesIO(file.read()))
+            # Limpeza do nome para legenda
             plotTitle = matFile.replace('.mat', '').replace('_analise_completa', '').replace('__', ' - ').replace('_',
                                                                                                                   ' ')
 
@@ -117,48 +103,70 @@ def processar_arquivos(uploaded_files):
             metrics_data['Caso'].append(plotTitle)
             metrics_data['Cor'].append(currentColor)
 
-            # --- Extração e Plotagem (800 e T2F) ---
-            # Helper para processar cada sinal
-            def process_signal(prefix_ts, prefix_fft, fig_key_t, fig_key_f, is_current=True):
-                # Extrai dados
-                t = data[prefix_ts][0, 0]['Time'].flatten()
-                y = data[prefix_ts][0, 0]['Data'][:, 0]
-                f = data['fft_data'][0, 0][prefix_fft].flatten()
-                P1 = data['fft_data'][0, 0][prefix_fft.replace('f_', 'P1_')][:, 0]
+            # --- Processamento por Ponto ---
+            for p in PONTOS:
+                # Chaves no .mat (ex: ts_I_800, f_I800)
+                # Nota: O script MATLAB salva como ts_I_800, ts_I_T2F, etc.
+                suffix = f'_{p}'
 
-                # Plota Linhas
-                line_figs[fig_key_t].add_trace(go.Scatter(x=t, y=y, name=plotTitle, line=dict(color=currentColor)))
-                line_figs[fig_key_f].add_trace(
-                    go.Scatter(x=f, y=20 * np.log10(P1 + 1e-9), name=plotTitle, line=dict(color=currentColor)))
+                for var in ['I', 'V']:
+                    # Nomes das chaves no struct do MATLAB
+                    ts_key = f'ts_{var}{suffix}'  # ex: ts_I_800
+                    f_key = f'f_{var}{suffix}'  # ex: f_I_800 (cuidado com underscore extra se houver)
+                    # No seu script MATLAB, fft_data salva como f_I_800 ou f_I800?
+                    # Verificando seu script anterior: tosave.fft_data.(['f_' vn]) onde vn é 'I_800'.
+                    # Então a chave é 'f_I_800'.
 
-                # Calcula Métricas (Apenas se for Ponto 800 para os gráficos de barra principais)
-                if '800' in fig_key_t:
-                    pico = np.max(np.abs(y))
-                    thd = calculate_thd(f, P1)
-                    h3 = get_harmonic_amplitude(f, P1, 3)
-                    h5 = get_harmonic_amplitude(f, P1, 5)
-                    h7 = get_harmonic_amplitude(f, P1, 7)
+                    # Ajuste fino para as chaves de FFT baseadas no seu script MATLAB
+                    # vn era 'I_800', entao a chave é 'f_I_800'
+                    fft_prefix = f'{var}_{p}'  # I_800
+                    fft_f_key = f'f_{fft_prefix}'
+                    fft_p1_key = f'P1_{fft_prefix}'
 
-                    type_key = 'I800' if is_current else 'V800'
-                    metrics_data[f'{type_key}_Pico'].append(pico)
-                    metrics_data[f'{type_key}_THD'].append(thd)
-                    metrics_data[f'{type_key}_H3'].append(h3)
-                    metrics_data[f'{type_key}_H5'].append(h5)
-                    metrics_data[f'{type_key}_H7'].append(h7)
+                    # Chaves para as Figuras (sem underscore extra)
+                    fig_key_root = f'{var}{p}'  # I800
 
-                    # Dados para o espectro completo (apenas Corrente I800)
-                    if is_current:
-                        amps = [get_harmonic_amplitude(f, P1, h) for h in [1] + HARMONICOS_IMPARES]
-                        spectrum_data.append({'Caso': plotTitle, 'Amps': amps, 'Cor': currentColor})
+                    try:
+                        # Extração dos dados
+                        t = data[ts_key][0, 0]['Time'].flatten()
+                        y = data[ts_key][0, 0]['Data'][:, 0]  # Fase A
+                        f = data['fft_data'][0, 0][fft_f_key].flatten()
+                        P1 = data['fft_data'][0, 0][fft_p1_key][:, 0]  # Fase A
 
-            # Processa os 4 sinais
-            process_signal('ts_I_800', 'f_I800', 'I800_T', 'I800_F', True)
-            process_signal('ts_V_800', 'f_V800', 'V800_T', 'V800_F', False)
-            process_signal('ts_I_T2F', 'f_IT2F', 'IT2F_T', 'IT2F_F', True)
-            process_signal('ts_V_T2F', 'f_VT2F', 'VT2F_T', 'VT2F_F', False)
+                        # Plotagem (Linhas)
+                        line_figs[f'{fig_key_root}_T'].add_trace(
+                            go.Scatter(x=t, y=y, name=plotTitle, line=dict(color=currentColor)))
+                        line_figs[f'{fig_key_root}_F'].add_trace(
+                            go.Scatter(x=f, y=20 * np.log10(P1 + 1e-9), name=plotTitle, line=dict(color=currentColor)))
+
+                        # Cálculo de Métricas
+                        pico = np.max(np.abs(y))
+                        thd = calculate_thd(f, P1)
+                        h3 = get_harmonic_amplitude(f, P1, 3)
+                        h5 = get_harmonic_amplitude(f, P1, 5)
+                        h7 = get_harmonic_amplitude(f, P1, 7)
+
+                        # Armazenamento das métricas
+                        metrics_data[f'{fig_key_root}_Pico'].append(pico)
+                        metrics_data[f'{fig_key_root}_THD'].append(thd)
+                        metrics_data[f'{fig_key_root}_H3'].append(h3)
+                        metrics_data[f'{fig_key_root}_H5'].append(h5)
+                        metrics_data[f'{fig_key_root}_H7'].append(h7)
+
+                        # Dados para espectro completo (Apenas Corrente do Ponto 800 como exemplo principal, ou todos?)
+                        # Vamos pegar I_800 como referência principal de injeção
+                        if p == '800' and var == 'I':
+                            amps = [get_harmonic_amplitude(f, P1, h) for h in [1] + HARMONICOS_IMPARES]
+                            spectrum_data.append({'Caso': plotTitle, 'Amps': amps, 'Cor': currentColor})
+
+                    except KeyError as ke:
+                        # Se faltar dado de um ponto específico, preenche com 0/NaN para não quebrar o DF
+                        # st.warning(f"Dado ausente em {matFile}: {ke}")
+                        for m in metricas_types:
+                            metrics_data[f'{fig_key_root}_{m}'].append(0)
 
         except Exception as e:
-            st.error(f"Erro no arquivo '{matFile}': {e}")
+            st.error(f"Erro fatal no arquivo '{matFile}': {e}")
             continue
 
     # --- Criação dos Gráficos de Barra (Bar Figs) ---
@@ -166,45 +174,51 @@ def processar_arquivos(uploaded_files):
     df = pd.DataFrame(metrics_data)
 
     if not df.empty:
-        # Função auxiliar para criar barras
-        def create_bar(y_col, title, y_axis):
-            fig = go.Figure(go.Bar(x=df['Caso'], y=df[y_col], marker_color=df['Cor'], name=title))
-            fig.update_layout(title=title, yaxis_title=y_axis, xaxis_tickangle=-45)
+        # Função auxiliar para criar gráfico de barras padronizado
+        def create_bar(y_col, title_text, y_label):
+            fig = go.Figure(go.Bar(x=df['Caso'], y=df[y_col], marker_color=df['Cor'], name=title_text))
+            fig.update_layout(title=title_text, yaxis_title=y_label, xaxis_tickangle=-45)
             return fig
 
-        # Métricas de Corrente (I800)
-        bar_figs['Bar_I_Pico'] = create_bar('I800_Pico', 'Pico de Corrente (I_800)', 'Corrente (A)')
-        bar_figs['Bar_I_THD'] = create_bar('I800_THD', 'THD de Corrente (I_800)', 'THD (%)')
-        bar_figs['Bar_I_h3'] = create_bar('I800_H3', '3ª Harmônica (180 Hz)', 'Amplitude (A)')
-        bar_figs['Bar_I_h5'] = create_bar('I800_H5', '5ª Harmônica (300 Hz)', 'Amplitude (A)')
-        bar_figs['Bar_I_h7'] = create_bar('I800_H7', '7ª Harmônica (420 Hz)', 'Amplitude (A)')
+        # Gera barras para TODOS os pontos e métricas
+        for p in PONTOS:
+            # Corrente
+            base_I = f'I{p}'
+            bar_figs[f'Bar_{base_I}_Pico'] = create_bar(f'{base_I}_Pico', f'Pico Corrente ({base_I})', 'Amperes')
+            bar_figs[f'Bar_{base_I}_THD'] = create_bar(f'{base_I}_THD', f'THD Corrente ({base_I})', '%')
+            bar_figs[f'Bar_{base_I}_H3'] = create_bar(f'{base_I}_H3', f'H3 Corrente ({base_I})', 'Amperes')
+            bar_figs[f'Bar_{base_I}_H5'] = create_bar(f'{base_I}_H5', f'H5 Corrente ({base_I})', 'Amperes')
+            bar_figs[f'Bar_{base_I}_H7'] = create_bar(f'{base_I}_H7', f'H7 Corrente ({base_I})', 'Amperes')
 
-        # Métricas de Tensão (V800)
-        bar_figs['Bar_V_Pico'] = create_bar('V800_Pico', 'Pico de Tensão (V_800)', 'Tensão (V)')
-        bar_figs['Bar_V_THD'] = create_bar('V800_THD', 'THD de Tensão (V_800)', 'THD (%)')
-        bar_figs['Bar_V_h3'] = create_bar('V800_H3', '3ª Harmônica Tensão', 'Amplitude (V)')
+            # Tensão
+            base_V = f'V{p}'
+            bar_figs[f'Bar_{base_V}_Pico'] = create_bar(f'{base_V}_Pico', f'Pico Tensão ({base_V})', 'Volts')
+            bar_figs[f'Bar_{base_V}_THD'] = create_bar(f'{base_V}_THD', f'THD Tensão ({base_V})', '%')
+            bar_figs[f'Bar_{base_V}_H3'] = create_bar(f'{base_V}_H3', f'H3 Tensão ({base_V})', 'Volts')
+            bar_figs[f'Bar_{base_V}_H5'] = create_bar(f'{base_V}_H5', f'H5 Tensão ({base_V})', 'Volts')
+            bar_figs[f'Bar_{base_V}_H7'] = create_bar(f'{base_V}_H7', f'H7 Tensão ({base_V})', 'Volts')
 
-        # --- Gráfico de Espectro Completo (Grouped Bar) ---
-        spectrum_fig = go.Figure()
-        harm_labels = ['H1 (60Hz)'] + [f'H{h} ({h * 60}Hz)' for h in HARMONICOS_IMPARES]
+        # Gráfico de Espectro Completo (I_800)
+        if spectrum_data:
+            spectrum_fig = go.Figure()
+            harm_labels = ['H1'] + [f'H{h}' for h in HARMONICOS_IMPARES]
 
-        for item in spectrum_data:
-            spectrum_fig.add_trace(go.Bar(
-                x=harm_labels,
-                y=item['Amps'],
-                name=item['Caso'],
-                marker_color=item['Cor']
-            ))
-        spectrum_fig.update_layout(title='Espectro Harmônico Completo (Corrente I_800)',
-                                   yaxis_title='Amplitude (A)', barmode='group')
-        bar_figs['Spectrum_Full'] = spectrum_fig
+            for item in spectrum_data:
+                spectrum_fig.add_trace(go.Bar(
+                    x=harm_labels, y=item['Amps'], name=item['Caso'], marker_color=item['Cor']
+                ))
+            spectrum_fig.update_layout(title='Espectro Harmônico Completo (I_800) - Comparação H1..H15',
+                                       yaxis_title='Amplitude (A)', barmode='group')
+            # Escala logarítmica no eixo Y pode ser útil para ver H altas junto com H1
+            # spectrum_fig.update_yaxes(type="log")
+            bar_figs['Spectrum_Full'] = spectrum_fig
 
     return line_figs, bar_figs
 
 
 # ===================== Interface =====================
 uploaded_files = st.file_uploader(
-    "Selecione arquivos .mat (da pasta 'resultados_faltas_com_fft')",
+    "Selecione arquivos .mat (da pasta 'resultados_faltas_com_fft_expandido')",
     accept_multiple_files=True, type=['.mat']
 )
 
@@ -214,69 +228,75 @@ if uploaded_files:
 
     st.success("Processamento concluído!")
 
-    # Abas organizadas
-    tabs = st.tabs([
-        "📊 Métricas Principais",
-        "🌊 Espectro Harmônico",
-        "📈 Ponto 800 (Onda/FFT)",
-        "📉 Ponto T2F (Onda/FFT)"
-    ])
+    # --- Criação de Abas Dinâmicas ---
+    # 1 Aba de Métricas Gerais + 1 Aba de Espectro + 1 Aba por Ponto
+    tab_names = ["📊 Métricas (Barras)", "🌊 Espectro Detalhado"] + [f"📍 Ponto {p}" for p in PONTOS]
+    tabs = st.tabs(tab_names)
 
-    with tabs[0]:  # Métricas
-        if bar_figs:
-            st.subheader("Análise de Corrente (Ponto 800)")
-            c1, c2 = st.columns(2)
-            c1.plotly_chart(bar_figs['Bar_I_Pico'], use_container_width=True)
-            c2.plotly_chart(bar_figs['Bar_I_THD'], use_container_width=True)
+    # 1. Aba de Métricas (Organizada por Expander)
+    with tabs[0]:
+        st.markdown("### Comparação Quantitativa")
 
-            st.subheader("Detalhamento de Harmônicas (Corrente)")
-            c3, c4, c5 = st.columns(3)
-            c3.plotly_chart(bar_figs['Bar_I_h3'], use_container_width=True)
-            c4.plotly_chart(bar_figs['Bar_I_h5'], use_container_width=True)
-            c5.plotly_chart(bar_figs['Bar_I_h7'], use_container_width=True)
-
-            st.subheader("Análise de Tensão (Ponto 800)")
-            c6, c7 = st.columns(2)
-            c6.plotly_chart(bar_figs['Bar_V_Pico'], use_container_width=True)
-            c7.plotly_chart(bar_figs['Bar_V_h3'], use_container_width=True)
-
-    with tabs[1]:  # Espectro Completo
-        if bar_figs:
+        # Espectro Completo no topo
+        if 'Spectrum_Full' in bar_figs:
             st.plotly_chart(bar_figs['Spectrum_Full'], use_container_width=True)
-            st.info("Este gráfico mostra a magnitude da Fundamental (H1) e de todas as ímpares até H15 lado a lado.")
+            st.markdown("---")
 
-    with tabs[2]:  # Ponto 800
-        c1, c2 = st.columns(2)
-        c1.plotly_chart(line_figs['I800_T'], use_container_width=True)
-        c2.plotly_chart(line_figs['I800_F'], use_container_width=True)
-        c3, c4 = st.columns(2)
-        c3.plotly_chart(line_figs['V800_T'], use_container_width=True)
-        c4.plotly_chart(line_figs['V800_F'], use_container_width=True)
+        # Expander para cada ponto
+        for p in PONTOS:
+            with st.expander(f"Métricas do Ponto {p}", expanded=(p == '800')):
+                st.markdown(f"#### Corrente ({p})")
+                c1, c2 = st.columns(2)
+                c1.plotly_chart(bar_figs[f'Bar_I{p}_Pico'], use_container_width=True)
+                c2.plotly_chart(bar_figs[f'Bar_I{p}_THD'], use_container_width=True)
 
-    with tabs[3]:  # Ponto T2F
-        c1, c2 = st.columns(2)
-        c1.plotly_chart(line_figs['IT2F_T'], use_container_width=True)
-        c2.plotly_chart(line_figs['IT2F_F'], use_container_width=True)
-        c3, c4 = st.columns(2)
-        c3.plotly_chart(line_figs['VT2F_T'], use_container_width=True)
-        c4.plotly_chart(line_figs['VT2F_F'], use_container_width=True)
+                c3, c4, c5 = st.columns(3)
+                c3.plotly_chart(bar_figs[f'Bar_I{p}_H3'], use_container_width=True)
+                c4.plotly_chart(bar_figs[f'Bar_I{p}_H5'], use_container_width=True)
+                c5.plotly_chart(bar_figs[f'Bar_I{p}_H7'], use_container_width=True)
 
-    # Download
-    st.sidebar.markdown("### 📥 Exportar Dados")
-    if st.sidebar.button("Gerar ZIP com Imagens"):
-        with st.spinner("Gerando imagens..."):
+                st.markdown(f"#### Tensão ({p})")
+                c6, c7 = st.columns(2)
+                c6.plotly_chart(bar_figs[f'Bar_V{p}_Pico'], use_container_width=True)
+                c7.plotly_chart(bar_figs[f'Bar_V{p}_THD'], use_container_width=True)
+
+    # 2. Aba Extra (Placeholder ou Info)
+    with tabs[1]:
+        st.info(
+            "A aba 'Métricas' acima já contém a análise de H3, H5 e H7. O gráfico de espectro completo (H1-H15) também está lá.")
+
+    # 3. Abas dos Pontos (Formas de Onda)
+    # As abas de pontos começam no índice 2 da lista 'tabs'
+    for i, p in enumerate(PONTOS):
+        with tabs[i + 2]:
+            st.markdown(f"### Formas de Onda e FFT - Ponto {p}")
+            c1, c2 = st.columns(2)
+            c1.plotly_chart(line_figs[f'I{p}_T'], use_container_width=True)
+            c2.plotly_chart(line_figs[f'I{p}_F'], use_container_width=True)
+
+            c3, c4 = st.columns(2)
+            c3.plotly_chart(line_figs[f'V{p}_T'], use_container_width=True)
+            c4.plotly_chart(line_figs[f'V{p}_F'], use_container_width=True)
+
+    # --- Download ---
+    st.sidebar.markdown("### 📥 Exportar Tudo")
+    if st.sidebar.button("Gerar ZIP (Todas as Imagens)"):
+        with st.spinner("Gerando dezenas de imagens... (Isso pode demorar)"):
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # Junta tudo
                 all_figs = {**line_figs, **bar_figs}
+
                 for name, fig in all_figs.items():
                     try:
-                        fname = FNAMES_MAP.get(name, name)
-                        zf.writestr(f"{fname}.png", fig.to_image(format="png", width=1200, height=700))
-                        zf.writestr(f"{fname}.html", fig.to_html())
+                        # Nome do arquivo limpo
+                        fname = f"{name}.png"
+                        zf.writestr(fname, fig.to_image(format="png", width=1200, height=700))
                     except Exception as e:
-                        st.error(f"Erro ao salvar {name}: {e}")
+                        st.sidebar.error(f"Erro ao salvar {name}: {e}")
 
-            st.sidebar.download_button("Baixar ZIP", zip_buffer.getvalue(), "analise_harmonicas.zip", "application/zip")
+            st.sidebar.download_button("Baixar ZIP Completo", zip_buffer.getvalue(), "analise_completa_5pontos.zip",
+                                       "application/zip")
 
 else:
-    st.info("Por favor, faça upload dos arquivos .mat para iniciar.")
+    st.info("Faça upload dos arquivos .mat gerados pelo script MATLAB expandido.")
