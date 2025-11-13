@@ -9,25 +9,32 @@ import numpy as np
 import pandas as pd
 
 # ===================== Configuração da Página =====================
-st.set_page_config(layout="wide", page_title="Analisador de Harmônicas T2F")
-st.title("Analisador Avançado de Qualidade de Energia (5 Pontos)")
+st.set_page_config(layout="wide", page_title="Analisador de Harmônicas T2F (10kHz)")
+st.title("Analisador Avançado de Qualidade de Energia (Espectro até 10kHz)")
 
 # ===================== Constantes =====================
 F_FUNDAMENTAL = 60  # Hz
-PLOT_XLIM_FFT = [0, 1000]  # Visualizar até 1kHz (aprox H16)
-HARMONICOS_IMPARES = [3, 5, 7, 9, 11, 13, 15]
-# Lista dos pontos exatos conforme nomes no MATLAB
+F_MAX_ANALISE = 10000  # 10 kHz
+
+# Gera lista de harmônicas ímpares automaticamente até 10 kHz
+# Ex: [3, 5, 7, ..., 165, 167]
+HARMONICOS_IMPARES = [h for h in range(3, int(F_MAX_ANALISE / F_FUNDAMENTAL) + 1, 2)]
+
+# Lista dos pontos de medição
 PONTOS = ['800', 'T2F', '818', '820', '822']
 
 
 # ===================== Funções Auxiliares =====================
 def get_harmonic_amplitude(freq_array, amp_array, order, fund_freq=60):
+    """Encontra a amplitude de uma frequência específica."""
     target_freq = order * fund_freq
+    # Encontra o índice mais próximo da frequência alvo
     idx = (np.abs(freq_array - target_freq)).argmin()
     return amp_array[idx]
 
 
 def calculate_thd(freq_array, amp_array, fund_freq=60, max_freq=2000):
+    """Calcula THD considerando harmônicas até max_freq."""
     amp_h1 = get_harmonic_amplitude(freq_array, amp_array, 1, fund_freq)
     if amp_h1 == 0: return 0
 
@@ -47,6 +54,7 @@ def processar_arquivos(uploaded_files):
     legend_entries = []
     metrics_data = {'Caso': [], 'Cor': []}
 
+    # Inicializa colunas do DataFrame
     metricas_types = ['Pico', 'THD', 'H3', 'H5', 'H7']
     for p in PONTOS:
         for var in ['I', 'V']:
@@ -55,59 +63,57 @@ def processar_arquivos(uploaded_files):
 
     spectrum_data = []
 
-    # --- 1. Inicializa Figuras de Linha (Com Marcadores de Harmônicas) ---
+    # --- 1. Inicializa Figuras de Linha ---
     line_figs = {}
+
     for p in PONTOS:
         for var, label in [('I', 'Corrente'), ('V', 'Tensão')]:
-            fig_key = f'{var}{p}'
+            key_root = f'{var}{p}'
 
-            # Figura Tempo
-            line_figs[f'{fig_key}_T'] = go.Figure(layout=go.Layout(
+            # Figura Tempo (Autoscale padrão do Plotly)
+            line_figs[f'{key_root}_T'] = go.Figure(layout=go.Layout(
                 title=f'Sinal no Tempo: {label} ({var}_{p}) - Fase A',
                 xaxis_title='Tempo (s)', yaxis_title='Amplitude'))
 
-            # Figura FFT
-            line_figs[f'{fig_key}_F'] = go.Figure(layout=go.Layout(
+            # Figura FFT (Autoscale + Faixa inicial até 10k)
+            line_figs[f'{key_root}_F'] = go.Figure(layout=go.Layout(
                 title=f'Espectro FFT: {label} ({var}_{p}) - Fase A',
                 xaxis_title='Frequência (Hz)', yaxis_title='Amplitude (dB)',
-                xaxis_range=PLOT_XLIM_FFT))
+                # Define o range inicial, mas permite zoom out (autoscale) pelo usuário
+                xaxis=dict(range=[0, F_MAX_ANALISE], autorange=False)
+            ))
 
-            # --- ADIÇÃO: Marcadores de Harmônicas Ímpares ---
+            # Adiciona marcadores para TODAS as harmônicas ímpares
             for h in HARMONICOS_IMPARES:
-                # Linha Vertical
-                line_figs[f'{fig_key}_F'].add_vline(
+                # Linha vertical mais sutil para não poluir
+                line_figs[f'{key_root}_F'].add_vline(
                     x=h * F_FUNDAMENTAL,
-                    line_width=1,
+                    line_width=0.5,
                     line_dash="dot",
-                    line_color="gray",
-                    opacity=0.5
+                    line_color="rgba(128, 128, 128, 0.3)"  # Cinza transparente
                 )
-                # Rótulo de Texto (Apenas para H3, H5, H7, H9 para não poluir)
-                if h <= 9:
-                    line_figs[f'{fig_key}_F'].add_annotation(
-                        x=h * F_FUNDAMENTAL,
-                        y=1,  # Posição relativa (topo do gráfico)
-                        yref="paper",
-                        text=f"H{h}",
-                        showarrow=False,
-                        font=dict(size=10, color="gray"),
-                        yshift=10
+
+                # Adiciona texto APENAS para as primeiras harmônicas para legibilidade
+                if h <= 15:
+                    line_figs[f'{key_root}_F'].add_annotation(
+                        x=h * F_FUNDAMENTAL, y=0, text=f"H{h}",
+                        showarrow=False, yshift=5, font=dict(size=8, color="gray")
                     )
 
-    # --- 2. Loop Principal de Arquivos ---
+    # --- Loop Principal de Arquivos ---
     for i, file in enumerate(uploaded_files):
         matFile = file.name
         currentColor = colors[i % len(colors)]
 
         try:
             data = sio.loadmat(io.BytesIO(file.read()))
-            plotTitle = matFile.replace('.mat', '').replace('__', ' - ').replace('_', ' ')
+            plotTitle = matFile.replace('.mat', '').replace('_analise_completa', '').replace('__', ' - ').replace('_',
+                                                                                                                  ' ')
 
             legend_entries.append(plotTitle)
             metrics_data['Caso'].append(plotTitle)
             metrics_data['Cor'].append(currentColor)
 
-            # Verifica estrutura (structs aninhados)
             try:
                 struct_ts = data['ts'][0, 0]
                 struct_fft = data['fft_data'][0, 0]
@@ -119,14 +125,13 @@ def processar_arquivos(uploaded_files):
             for p in PONTOS:
                 for var in ['I', 'V']:
                     vn = f"{var}_{p}"
-                    clean_vn = vn.replace('_', '')  # I800
+                    clean_vn = vn.replace('_', '')  # Ex: I800
 
-                    # Nomes das chaves no MATLAB
                     field_ts = f'ts_{vn}'
                     field_f = f'f_{vn}'
                     field_p1 = f'P1_{vn}'
 
-                    fig_key = clean_vn
+                    fig_key_root = clean_vn
 
                     try:
                         # Extração
@@ -137,37 +142,42 @@ def processar_arquivos(uploaded_files):
                         P1 = struct_fft[field_p1][:, 0]  # Fase A
 
                         # Plotagem
-                        line_figs[f'{fig_key}_T'].add_trace(
+                        line_figs[f'{fig_key_root}_T'].add_trace(
                             go.Scatter(x=t, y=y, name=plotTitle, line=dict(color=currentColor)))
-                        line_figs[f'{fig_key}_F'].add_trace(
+
+                        # FFT em dB
+                        line_figs[f'{fig_key_root}_F'].add_trace(
                             go.Scatter(x=f, y=20 * np.log10(P1 + 1e-9), name=plotTitle, line=dict(color=currentColor)))
 
-                        # Métricas (Recalculadas no Python)
+                        # Métricas
                         pico = np.max(np.abs(y))
-                        thd = calculate_thd(f, P1)
+                        # THD calculado até a frequência máxima de análise
+                        thd = calculate_thd(f, P1, fund_freq=F_FUNDAMENTAL, max_freq=F_MAX_ANALISE)
                         h3 = get_harmonic_amplitude(f, P1, 3)
                         h5 = get_harmonic_amplitude(f, P1, 5)
                         h7 = get_harmonic_amplitude(f, P1, 7)
 
-                        metrics_data[f'{fig_key}_Pico'].append(pico)
-                        metrics_data[f'{fig_key}_THD'].append(thd)
-                        metrics_data[f'{fig_key}_H3'].append(h3)
-                        metrics_data[f'{fig_key}_H5'].append(h5)
-                        metrics_data[f'{fig_key}_H7'].append(h7)
+                        metrics_data[f'{fig_key_root}_Pico'].append(pico)
+                        metrics_data[f'{fig_key_root}_THD'].append(thd)
+                        metrics_data[f'{fig_key_root}_H3'].append(h3)
+                        metrics_data[f'{fig_key_root}_H5'].append(h5)
+                        metrics_data[f'{fig_key_root}_H7'].append(h7)
 
                         # Espectro Completo (Usando I_T2F)
                         if p == 'T2F' and var == 'I':
+                            # Pega amplitudes de H1 até o máximo da lista
                             amps = [get_harmonic_amplitude(f, P1, h) for h in [1] + HARMONICOS_IMPARES]
                             spectrum_data.append({'Caso': plotTitle, 'Amps': amps, 'Cor': currentColor})
 
                     except ValueError:
-                        for m in metricas_types: metrics_data[f'{fig_key}_{m}'].append(0)
+                        for m in metricas_types:
+                            metrics_data[f'{fig_key_root}_{m}'].append(0)
 
         except Exception as e:
-            st.error(f"Erro fatal ao ler {matFile}: {e}")
+            st.error(f"Erro fatal no arquivo '{matFile}': {e}")
             continue
 
-    # --- 3. Criação dos Gráficos de Barra ---
+    # --- Criação dos Gráficos de Barra ---
     bar_figs = {}
     df = pd.DataFrame(metrics_data)
 
@@ -192,30 +202,44 @@ def processar_arquivos(uploaded_files):
             bar_figs[f'Bar_{base_V}_H5'] = create_bar(f'{base_V}_H5', f'H5 Tensão ({base_V})', 'V')
             bar_figs[f'Bar_{base_V}_H7'] = create_bar(f'{base_V}_H7', f'H7 Tensão ({base_V})', 'V')
 
+        # Gráfico de Espectro Completo (I_T2F até 10k)
         if spectrum_data:
-            sp_fig = go.Figure()
-            labels = ['H1 (60Hz)'] + [f'H{h} ({h * 60}Hz)' for h in HARMONICOS_IMPARES]
+            spectrum_fig = go.Figure()
+            # Rótulos para todas as harmônicas (vai ficar denso, mas é o pedido)
+            harm_labels = ['H1'] + [f'H{h}' for h in HARMONICOS_IMPARES]
+
             for item in spectrum_data:
-                sp_fig.add_trace(go.Bar(x=labels, y=item['Amps'], name=item['Caso'], marker_color=item['Cor']))
-            sp_fig.update_layout(title='Espectro Harmônico (I_T2F) - H1 a H15', yaxis_title='Amplitude (A)',
-                                 barmode='group')
-            bar_figs['Spectrum_Full'] = sp_fig
+                spectrum_fig.add_trace(go.Bar(
+                    x=harm_labels, y=item['Amps'], name=item['Caso'], marker_color=item['Cor']
+                ))
+
+            spectrum_fig.update_layout(
+                title=f'Espectro Harmônico Completo (I_T2F) - H1 até ~H{HARMONICOS_IMPARES[-1]} ({F_MAX_ANALISE} Hz)',
+                yaxis_title='Amplitude (A)',
+                barmode='group',
+                xaxis_tickangle=-90  # Rótulos verticais para caberem todos
+            )
+            bar_figs['Spectrum_Full'] = spectrum_fig
 
     return line_figs, bar_figs
 
 
 # ===================== Interface =====================
-uploaded_files = st.file_uploader("Selecione arquivos .mat", accept_multiple_files=True, type=['.mat'])
+uploaded_files = st.file_uploader(
+    "Selecione arquivos .mat",
+    accept_multiple_files=True, type=['.mat']
+)
 
 if uploaded_files:
     with st.spinner('Processando...'):
         line_figs, bar_figs = processar_arquivos(tuple(uploaded_files))
+
     st.success("Concluído!")
 
-    tab_names = ["📊 Métricas", "🌊 Espectro (I_T2F)"] + [f"📍 {p}" for p in PONTOS]
+    tab_names = ["📊 Métricas", "🌊 Espectro (I_T2F)", "📈 Ponto 800", "📉 Ponto T2F"] + [f"📍 {p}" for p in
+                                                                                      ['818', '820', '822']]
     tabs = st.tabs(tab_names)
 
-    # Aba 1: Métricas
     with tabs[0]:
         st.markdown("### Comparação de Harmônicas e THD")
         for p in PONTOS:
@@ -230,22 +254,22 @@ if uploaded_files:
                 c5.plotly_chart(bar_figs[f'Bar_V{p}_THD'], use_container_width=True)
                 c6.plotly_chart(bar_figs[f'Bar_V{p}_H3'], use_container_width=True)
 
-    # Aba 2: Espectro
     with tabs[1]:
-        if 'Spectrum_Full' in bar_figs: st.plotly_chart(bar_figs['Spectrum_Full'], use_container_width=True)
+        if 'Spectrum_Full' in bar_figs:
+            st.markdown("#### Varredura Espectral Completa (Ímpares até 10 kHz)")
+            st.plotly_chart(bar_figs['Spectrum_Full'], use_container_width=True)
 
-    # Abas de Pontos (2 a 6)
     for i, p in enumerate(PONTOS):
         with tabs[i + 2]:
             st.markdown(f"### Análise Detalhada: Ponto {p}")
             c1, c2 = st.columns(2)
             c1.plotly_chart(line_figs[f'I{p}_T'], use_container_width=True)
             c2.plotly_chart(line_figs[f'I{p}_F'], use_container_width=True)
+
             c3, c4 = st.columns(2)
             c3.plotly_chart(line_figs[f'V{p}_T'], use_container_width=True)
             c4.plotly_chart(line_figs[f'V{p}_F'], use_container_width=True)
 
-    # Download
     st.sidebar.markdown("### 📥 Exportar")
     if st.sidebar.button("Gerar ZIP"):
         with st.spinner("Gerando imagens..."):
