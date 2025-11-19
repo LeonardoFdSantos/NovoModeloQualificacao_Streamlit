@@ -7,80 +7,117 @@ from plotly.colors import qualitative
 import scipy.io as sio
 import numpy as np
 import pandas as pd
+from scipy.signal.windows import flattop # Necessário para janelamento FFT
 
 # ===================== Configuração da Página =====================
-st.set_page_config(layout="wide", page_title="Analisador Trifásico T2F")
-st.title("Analisador de Qualidade de Energia (Visão Trifásica Completa)")
+st.set_page_config(layout="wide", page_title="Análise de Dados Brutos de Faltas")
+st.title("Laboratório de Análise de Faltas (FFT Calculada em Python)")
 
 # ===================== Constantes =====================
 F_FUNDAMENTAL = 60  # Hz
-F_MAX_ANALISE = 2000 
+F_MAX_ANALISE = 2000 # THD e FFT até 2kHz
 HARMONICOS_IMPARES = [h for h in range(3, int(F_MAX_ANALISE / F_FUNDAMENTAL) + 1, 2) if h <= 15]
-PONTOS_BASE = ['800', 'T2F', '818_1', '818_2', '820', '822']
+
+# Lista dos pontos de medição
+PONTOS_BASE = ['800', 'V_800', 'T2F', '818_1', '818_2', '820', '822']
+# Ajustado para incluir V_800 no loop
+
+# Lista dos pontos que existem no .mat (I_800, V_800, I_T2F, V_T2F, etc.)
+VARS_A_ANALISAR = ['I_800', 'V_800', 'I_T2F', 'V_T2F', 'I_818_1', 'V_818_1', 'I_818_2', 'V_818_2', 'I_820', 'V_820', 'I_822', 'V_822']
 METRICAS_TYPES = ['Pico', 'THD', 'H3', 'H5', 'H7']
 FASES = ['A', 'B', 'C']
 
-# ===================== Funções Auxiliares =====================
+
+# ===================== Funções de FFT (Execução no Python) =====================
 @st.cache_data
-def get_harmonic_amplitude(freq_array, amp_array, order, fund_freq=60):
+def get_amplitude_at_order(freq_array, amp_array, order, fund_freq=60):
     if freq_array.size == 0: return 0
     target_freq = order * fund_freq
     idx = (np.abs(freq_array - target_freq)).argmin()
     return amp_array[idx]
 
-@st.cache_data
-def calculate_thd(freq_array, amp_array, fund_freq=60, max_freq=2000):
-    if freq_array.size == 0: return 0
-    amp_h1 = get_harmonic_amplitude(freq_array, amp_array, 1, fund_freq)
-    if amp_h1 == 0: return 0
+def calculate_fft_and_harmonics(time_vec, data_vec, fund_freq=60):
+    """Executa a FFT completa (com Janelamento Flat Top) e extrai métricas."""
     
-    sum_squares = 0
-    for order in range(2, int(max_freq/fund_freq)):
-        amp_hn = get_harmonic_amplitude(freq_array, amp_array, order, fund_freq)
-        sum_squares += amp_hn ** 2
+    if data_vec.size < 4: return None, None, {}
+
+    Ts = np.mean(np.diff(time_vec))
+    if Ts == 0: return None, None, {}
+    
+    Fs = 1.0 / Ts
+    L = len(data_vec)
+    
+    # 1. Janela Flat Top (Para precisão de amplitude)
+    win = flattop(L, sym=False)
+    y_janelado = data_vec * win
+    
+    # 2. FFT
+    Y = np.fft.fft(y_janelado)
+    
+    # 3. Correção de Amplitude (ganho coerente)
+    coherent_gain = np.sum(win) / L
+    P2 = np.abs(Y / (L * coherent_gain))
+    
+    # Espectro de Lado Único (SSAS)
+    P1 = P2[:L//2 + 1]
+    P1[1:-1] = 2 * P1[1:-1]
+    
+    # Vetor de Frequência
+    f = np.linspace(0, Fs/2, L//2 + 1)
+
+    # 4. Cálculo de Harmônicas e THD
+    h_metrics = {}
+    
+    def get_amp(order):
+        return get_amplitude_at_order(f, P1, order, fund_freq)
         
-    thd = (np.sqrt(sum_squares) / amp_h1) * 100 
-    return thd
+    sum_squares = 0
+    for order in range(2, 51): # THD padrão até a 50ª ordem
+        sum_squares += get_amp(order) ** 2
+        
+    amp_h1 = get_amp(1)
+    h_metrics['THD'] = (np.sqrt(sum_squares) / amp_h1) * 100 if amp_h1 > 1e-9 else 0
+    
+    h_metrics['H3'] = get_amp(3)
+    h_metrics['H5'] = get_amp(5)
+    h_metrics['H7'] = get_amp(7)
 
-def aplicar_estilo_grafico(fig):
-    fig.update_layout(
-        legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5),
-        margin=dict(l=40, r=20, t=40, b=80),
-        hovermode="x unified"
-    )
-    return fig
+    return f, P1, h_metrics
 
-# ===================== Função de Processamento =====================
+# ===================== Função de Processamento Principal =====================
 @st.cache_data
 def processar_arquivos(uploaded_files):
     colors = qualitative.Plotly
     metrics_data = {'Simulacao': [], 'CasoFalta': [], 'Local_m1': [], 'Cor': []}
     
-    for p in PONTOS_BASE:
-        for var in ['I', 'V']:
-            for fase in FASES:
-                for m in METRICAS_TYPES:
-                    metrics_data[f'{var}{p}_{m}_Fase{fase}'] = []
+    # Inicializa colunas do DataFrame
+    for p_raw in VARS_A_ANALISAR:
+        p = p_raw.replace('_', '')
+        for fase in FASES:
+            for m in METRICAS_TYPES:
+                metrics_data[f'{p}_{m}_Fase{fase}'] = []
 
     spectrum_data = [] 
     line_figs = {}
 
     # Inicializa Figuras de Linha
-    for p in PONTOS_BASE:
-        for var, label in [('I', 'Corrente'), ('V', 'Tensão')]:
-            key_root = f'{var}{p.replace("_", "")}'
-            for fase in FASES:
-                fig_t_key = f'{key_root}_T_{fase}'
-                line_figs[fig_t_key] = go.Figure(layout=go.Layout(title=f'Tempo: {var}_{p} (Fase {fase})', xaxis_title='s', yaxis_title='Amp.'))
-                aplicar_estilo_grafico(line_figs[fig_t_key])
+    for p_raw in VARS_A_ANALISAR:
+        clean_p = p_raw.replace('_', '')
+        var_type = p_raw[0] # I ou V
+        
+        for fase in FASES:
+            # Figura Tempo
+            fig_t_key = f'{clean_p}_T_{fase}'
+            line_figs[fig_t_key] = go.Figure(layout=go.Layout(title=f'Tempo: {p_raw} (Fase {fase})', xaxis_title='s', yaxis_title='Amp.'))
+            aplicar_estilo_grafico(line_figs[fig_t_key])
 
-                fig_f_key = f'{key_root}_F_{fase}'
-                line_figs[fig_f_key] = go.Figure(layout=go.Layout(title=f'FFT: {var}_{p} (Fase {fase})', xaxis_title='Hz', yaxis_title='Amplitude (dB)', xaxis=dict(range=[0, F_MAX_ANALISE/2], autorange=False)))
-                aplicar_estilo_grafico(line_figs[fig_f_key])
-                
-                for h in HARMONICOS_IMPARES:
-                    line_figs[fig_f_key].add_vline(x=h*F_FUNDAMENTAL, line_width=0.5, line_dash="dot", line_color="gray", opacity=0.3)
-                    if h <= 9: line_figs[f'{fig_f_key}'].add_annotation(x=h*F_FUNDAMENTAL, y=1, yref="paper", text=f"H{h}", showarrow=False, font_size=8, yshift=10)
+            # Figura FFT
+            fig_f_key = f'{clean_p}_F_{fase}'
+            line_figs[f'{fig_f_key}'] = go.Figure(layout=go.Layout(title=f'FFT: {p_raw} (Fase {fase})', xaxis_title='Hz', yaxis_title='Amplitude (dB)', xaxis=dict(range=[0, F_MAX_ANALISE/2], autorange=False)))
+            aplicar_estilo_grafico(line_figs[f'{fig_f_key}'])
+            
+            for h in HARMONICOS_IMPARES:
+                line_figs[f'{fig_f_key}'].add_vline(x=h*F_FUNDAMENTAL, line_width=0.5, line_dash="dot", line_color="gray", opacity=0.3)
 
     # --- Loop Principal de Arquivos ---
     for i, file in enumerate(uploaded_files):
@@ -90,12 +127,14 @@ def processar_arquivos(uploaded_files):
         try:
             data = sio.loadmat(io.BytesIO(file.read()))
             
-            # Processa Nome
             plotTitle = matFile.replace('.mat', '').replace('__', ' - ').replace('_', ' ')
             
-            # Adiciona dados de identificação (Executa apenas se o arquivo for lido)
-            try: parts = plotTitle.split(' - ', 1); simName = parts[0].strip(); caseName = parts[1].strip() if len(parts) > 1 else 'Sem Falta';
-            except: simName = plotTitle; caseName = "N/A"
+            try:
+                parts = plotTitle.split(' - ', 1)
+                simName = parts[0].strip()
+                caseName = parts[1].strip() if len(parts) > 1 else 'Sem Falta'
+            except:
+                simName = plotTitle; caseName = "N/A"
                 
             metrics_data['Simulacao'].append(simName)
             metrics_data['CasoFalta'].append(caseName)
@@ -107,64 +146,54 @@ def processar_arquivos(uploaded_files):
             
             if 'ts' not in data: raise ValueError("Estrutura inválida (faltam 'ts')")
             struct_ts = data['ts'][0, 0]
-            struct_fft = data['fft_data'][0, 0]
             
-            # --- Processamento por Ponto ---
-            for p in PONTOS_BASE:
-                for var in ['I', 'V']:
-                    vn = f"{var}_{p}"
-                    clean_vn_fig = vn.replace('_', '')
+            # --- Processamento por Ponto de Medição ---
+            for varName_raw in VARS_A_ANALISAR:
+                
+                clean_name = varName_raw.replace('_', '')
+                ts_field = f'ts_{varName_raw}'
+                fig_key = clean_name # Ex: I800, VT2F
+
+                try:
+                    ts_data_struct = struct_ts[ts_field][0, 0]
+                    t = ts_data_struct['Time'].flatten()
+                    y_all = ts_data_struct['Data']
                     
-                    field_ts = f'ts_{vn}'
-                    field_f = f'f_{vn}'
-                    field_p1 = f'P1_{vn}'
-
-                    # Tenta ler o ponto e processar
-                    try:
-                        ts_data_struct = struct_ts[field_ts][0, 0]
-                        t = ts_data_struct['Time'].flatten()
-                        y_all = ts_data_struct['Data']
+                    if y_all.shape[1] == 1: y_all = np.tile(y_all, (1, 3)) # Garante 3 fases
+                    
+                    # Loop por Fase
+                    for idx, fase in enumerate(FASES):
+                        y_fase = y_all[:, idx]
                         
-                        f = struct_fft[field_f].flatten()
-                        P1_all = struct_fft[field_p1]
+                        # 1. CÁLCULO FFT e HARMÔNICAS (NOVA LÓGICA)
+                        f, P1_f, h_metrics = calculate_fft_and_harmonics(t, y_fase, F_FUNDAMENTAL)
                         
-                        if y_all.shape[1] == 1: y_all = np.tile(y_all, (1, 3))
-                        if P1_all.shape[1] == 1: P1_all = np.tile(P1_all, (1, 3))
+                        # Plotagem
+                        line_figs[f'{fig_key}_T_{fase}'].add_trace(go.Scatter(x=t, y=y_fase, name=plotTitle, line=dict(color=currentColor), showlegend=(idx==0)))
+                        if f is not None:
+                            line_figs[f'{fig_key}_F_{fase}'].add_trace(go.Scatter(x=f, y=20*np.log10(P1_f+1e-9), name=plotTitle, line=dict(color=currentColor), showlegend=(idx==0)))
+
+                        # 2. Métricas
+                        pico = np.max(np.abs(y_fase)) if y_fase.size > 0 else np.nan
                         
-                        # Loop por Fase
-                        for idx, fase in enumerate(FASES):
-                            y_fase = y_all[:, idx]
-                            P1_fase = P1_all[:, idx]
-                            
-                            # Plotagem
-                            line_figs[f'{clean_vn_fig}_T_{fase}'].add_trace(go.Scatter(x=t, y=y_fase, name=plotTitle, line=dict(color=currentColor), showlegend=(idx==0)))
-                            if f.size > 0:
-                                line_figs[f'{clean_vn_fig}_F_{fase}'].add_trace(go.Scatter(x=f, y=20*np.log10(P1_fase+1e-9), name=plotTitle, line=dict(color=currentColor), showlegend=(idx==0)))
+                        metrics_data[f'{fig_key}_Pico_Fase{fase}'].append(pico)
+                        metrics_data[f'{fig_key}_THD_Fase{fase}'].append(h_metrics['THD'])
+                        metrics_data[f'{fig_key}_H3_Fase{fase}'].append(h_metrics['H3'])
+                        metrics_data[f'{fig_key}_H5_Fase{fase}'].append(h_metrics['H5'])
+                        metrics_data[f'{fig_key}_H7_Fase{fase}'].append(h_metrics['H7'])
 
-                            # Métricas
-                            pico = np.max(np.abs(y_fase)) if y_fase.size > 0 else np.nan
-                            thd = calculate_thd(f, P1_fase, F_FUNDAMENTAL, F_MAX_ANALISE) if f.size > 0 else np.nan
-                            h3 = get_harmonic_amplitude(f, P1_fase, 3) if f.size > 0 else np.nan
-                            h5 = get_harmonic_amplitude(f, P1_fase, 5) if f.size > 0 else np.nan
-                            h7 = get_harmonic_amplitude(f, P1_fase, 7) if f.size > 0 else np.nan
-                            
-                            metrics_data[f'{var}{p}_Pico_Fase{fase}'].append(pico)
-                            metrics_data[f'{var}{p}_THD_Fase{fase}'].append(thd)
-                            metrics_data[f'{var}{p}_H3_Fase{fase}'].append(h3)
-                            metrics_data[f'{var}{p}_H5_Fase{fase}'].append(h5)
-                            metrics_data[f'{var}{p}_H7_Fase{fase}'].append(h7)
+                    # Espectro (T2F)
+                    if varName_raw == 'I_T2F':
+                        amps_A = [get_amplitude_at_order(f, P1_f, h) for h in [1] + HARMONICOS_IMPARES]
+                        spectrum_data.append({'Caso': f"{plotTitle} (Fase A)", 'Amps': amps_A, 'Cor': currentColor})
 
-                        if p == 'T2F' and var == 'I' and f.size > 0:
-                            amps_A = [get_amplitude_at_order(f, P1_all[:,0], h) for h in [1]+HARMONICOS_IMPARES]
-                            spectrum_data.append({'Caso': f"{plotTitle} (Fase A)", 'Amps': amps_A, 'Cor': currentColor})
-
-                    except Exception as e_inner:
-                        # Se falhar o processamento, preenche com NaN
-                        for fase in FASES:
-                            for m in METRICAS_TYPES:
-                                metrics_data[f'{var}{p}_{m}_Fase{fase}'].append(np.nan)
+                except Exception as e_inner:
+                    # Se falhar, preenche com NaN
+                    for fase in FASES:
+                        for m in METRICAS_TYPES:
+                            metrics_data[f'{varName_raw.replace("_", "")}_{m}_Fase{fase}'].append(np.nan)
         except Exception as e:
-            st.error(f"Erro fatal ao ler {matFile}: {e}")
+            st.error(f"Erro ao ler arquivo {matFile}: {e}")
             continue
 
     # --- 3. Gráficos de Barra ---
@@ -172,20 +201,21 @@ def processar_arquivos(uploaded_files):
     df = pd.DataFrame(metrics_data)
     
     if not df.empty:
+        # ... (Criação dos gráficos de barra omitida por brevidade, mas a lógica é a mesma)
         def create_bar(df_in, y_col, title, y_unit):
             fig = go.Figure(go.Bar(x=df_in['CasoFalta'], y=df_in[y_col], marker_color=df_in['Cor'], name=title))
             fig.update_layout(title=title, yaxis_title=y_unit, xaxis_tickangle=-45, legend=dict(orientation='h', y=-0.3, x=0.5, xanchor="center"), margin=dict(l=40, r=20, t=40, b=80))
             return fig
 
-        for p in PONTOS_BASE:
-            for var in ['I', 'V']:
-                unit = 'A' if var == 'I' else 'V'
-                for fase in FASES:
-                    for m in METRICAS_TYPES:
-                        col = f'{var}{p}_{m}_Fase{fase}'
-                        if col in df.columns:
-                            m_label = "Pico" if m == "Pico" else "THD" if m == "THD" else f"H{m[1]}"
-                            bar_figs[f'Bar_{col}'] = create_bar(df, col, f'{m_label} {var}{p} (Fase {fase})', unit if m != 'THD' else '%')
+        for p_raw in VARS_A_ANALISAR:
+            p = p_raw.replace('_', '')
+            unit = 'A' if p_raw.startswith('I') else 'V'
+            for fase in FASES:
+                for m in METRICAS_TYPES:
+                    col_name = f'{p}_{m}_Fase{fase}'
+                    if col_name in df.columns:
+                        m_label = "Pico" if m == "Pico" else "THD" if m == "THD" else f"H{m[1]}"
+                        bar_figs[f'Bar_{col_name}'] = create_bar(df, col_name, f'{m_label} {p_raw} (Fase {fase})', unit if m != 'THD' else '%')
 
         if spectrum_data:
             sp_fig = go.Figure()
@@ -198,6 +228,7 @@ def processar_arquivos(uploaded_files):
     return line_figs, bar_figs, df
 
 # ===================== Interface =====================
+# ... (Interface code structure remains the same as previous prompt) ...
 uploaded_files = st.file_uploader("Selecione arquivos .mat", accept_multiple_files=True, type=['.mat'])
 
 if uploaded_files:
@@ -205,7 +236,6 @@ if uploaded_files:
         line_figs, bar_figs, df_metrics = processar_arquivos(tuple(uploaded_files))
     st.success("Concluído!")
     
-    # Função para Extremos (usada na Aba 0)
     def show_extreme_metric_card(col_obj, df, col, title, find_max=True):
         if col not in df.columns or df[col].isnull().all(): return
         try:
@@ -216,11 +246,11 @@ if uploaded_files:
             col_obj.metric(label=label, value=f"{val:.2f}", delta=f"Caso: {case}", delta_color="off")
         except: pass
 
-    # --- Definição das Abas ---
+    # Definição das Abas
     tab_names = ["🏆 Extremos", "📉 Localização (m1)", "📊 Métricas", "🌊 Espectro"] + [f"📍 {p}" for p in PONTOS_BASE]
     tabs = st.tabs(tab_names)
 
-    # --- Aba 0: Extremos ---
+    # Aba 0: Extremos
     with tabs[0]:
         st.header("Análise de Casos Extremos (Visão Geral)")
         if not df_metrics.empty:
@@ -238,7 +268,7 @@ if uploaded_files:
                 show_extreme_metric_card(cols[3], df_metrics, f'IT2F_H3_Fase{fase}', f"H3 Corrente I_T2F (A)", True)
                 st.markdown("---")
 
-    # --- Aba 1: Varredura m1 ---
+    # Aba 1: Varredura m1
     with tabs[1]:
         st.header("Análise de Localização de Falta (Varredura m1)")
         df_m1 = df_metrics[df_metrics['Local_m1'] > 0].copy()
@@ -255,16 +285,16 @@ if uploaded_files:
             
             fig_m1 = go.Figure()
             for case in df_plot_sim['CasoFalta'].unique():
-                df_case = df_plot_sim[df_plot_sim['CasoFalta'] == case].sort_values('Local_m1')
+                d = df_plot_sim[df_plot_sim['CasoFalta'] == case].sort_values('Local_m1')
                 if not df_case.empty:
-                    fig_m1.add_trace(go.Scatter(x=df_case['Local_m1'], y=df_case[metric_choice], mode='lines+markers', name=case))
+                    fig_m1.add_trace(go.Scatter(x=d['Local_m1'], y=d[metric_choice], mode='lines+markers', name=case))
             
             fig_m1.update_layout(xaxis_title="Localização (m1)", yaxis_title=metric_choice)
             st.plotly_chart(fig_m1, use_container_width=True)
         else:
             st.info("Nenhum caso com variação de m1 encontrado.")
 
-    # --- Aba 2: Métricas (Barras Trifásicas) ---
+    # Aba 2: Métricas (Barras)
     with tabs[2]:
         fase_bar_select = st.radio("Visualizar Fase:", FASES, horizontal=True, key="bar_fase")
         st.markdown(f"### Comparação Quantitativa (Fase {fase_bar_select})")
@@ -272,14 +302,20 @@ if uploaded_files:
         for p in PONTOS_BASE:
             with st.expander(f"Dados do Ponto {p}", expanded=(p=='800')):
                 cols = st.columns(3)
-                if f'Bar_I{p}_Pico_Fase{fase_bar_select}' in bar_figs: cols[0].plotly_chart(bar_figs[f'Bar_I{p}_Pico_Fase{fase_bar_select}'], use_container_width=True)
-                if f'Bar_I{p}_THD_Fase{fase_bar_select}' in bar_figs: cols[1].plotly_chart(bar_figs[f'Bar_I{p}_THD_Fase{fase_bar_select}'], use_container_width=True)
-                if f'Bar_I{p}_H3_Fase{fase_bar_select}' in bar_figs: cols[2].plotly_chart(bar_figs[f'Bar_I{p}_H3_Fase{fase_bar_select}'], use_container_width=True)
+                base = f'I{p.replace("_", "")}_Pico_Fase{fase_bar_select}'
+                if f'Bar_{base}' in bar_figs: cols[0].plotly_chart(bar_figs[f'Bar_{base}'], use_container_width=True)
+                base = f'I{p.replace("_", "")}_THD_Fase{fase_bar_select}'
+                if f'Bar_{base}' in bar_figs: cols[1].plotly_chart(bar_figs[f'Bar_{base}'], use_container_width=True)
+                base = f'I{p.replace("_", "")}_H3_Fase{fase_bar_select}'
+                if f'Bar_{base}' in bar_figs: cols[2].plotly_chart(bar_figs[f'Bar_{base}'], use_container_width=True)
                 
                 cols_v = st.columns(3)
-                if f'Bar_V{p}_Pico_Fase{fase_bar_select}' in bar_figs: cols_v[0].plotly_chart(bar_figs[f'Bar_V{p}_Pico_Fase{fase_bar_select}'], use_container_width=True)
-                if f'Bar_V{p}_THD_Fase{fase_bar_select}' in bar_figs: cols_v[1].plotly_chart(bar_figs[f'Bar_V{p}_THD_Fase{fase_bar_select}'], use_container_width=True)
-                if f'Bar_V{p}_H3_Fase{fase_bar_select}' in bar_figs: cols_v[2].plotly_chart(bar_figs[f'Bar_V{p}_H3_Fase{fase_bar_select}'], use_container_width=True)
+                base = f'V{p.replace("_", "")}_Pico_Fase{fase_bar_select}'
+                if f'Bar_{base}' in bar_figs: cols_v[0].plotly_chart(bar_figs[f'Bar_{base}'], use_container_width=True)
+                base = f'V{p.replace("_", "")}_THD_Fase{fase_bar_select}'
+                if f'Bar_{base}' in bar_figs: cols_v[1].plotly_chart(bar_figs[f'Bar_{base}'], use_container_width=True)
+                base = f'V{p.replace("_", "")}_H3_Fase{fase_bar_select}'
+                if f'Bar_{base}' in bar_figs: cols_v[2].plotly_chart(bar_figs[f'Bar_{base}'], use_container_width=True)
 
     # --- Aba 3: Espectro ---
     with tabs[3]:
@@ -291,11 +327,14 @@ if uploaded_files:
             clean_p = p.replace('_', '')
             st.markdown(f"### Análise Detalhada: Ponto {p}")
             
-            # Cria 3 colunas para mostrar A, B, C lado a lado
-            cols = st.columns(3)
-            for idx_fase, fase in enumerate(FASES):
-                with cols[idx_fase]:
-                    st.markdown(f"**Fase {fase}**")
+            # Sub-abas para as fases (A, B, C)
+            subtab_A, subtab_B, subtab_C = st.tabs(["Fase A", "Fase B", "Fase C"])
+            
+            for sub_tab, fase in zip([subtab_A, subtab_B, subtab_C], FASES):
+                with sub_tab:
+                    key_I = f"I{clean_p}_T_{fase}"
+                    key_V = f"V{clean_p}_T_{fase}"
+                    
                     st.plotly_chart(line_figs[f'I{clean_p}_T_{fase}'], use_container_width=True)
                     st.plotly_chart(line_figs[f'I{clean_p}_F_{fase}'], use_container_width=True)
                     st.plotly_chart(line_figs[f'V{clean_p}_T_{fase}'], use_container_width=True)
