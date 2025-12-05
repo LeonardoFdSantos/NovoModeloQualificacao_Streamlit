@@ -6,12 +6,12 @@ import pandas as pd
 import re
 
 # Configuração visual da página
-st.set_page_config(page_title="Análise Visual Avançada - IEEE 34", layout="wide")
+st.set_page_config(page_title="Análise Visual - Corrente Primeiro", layout="wide")
 
-st.title("📊 Análise Visual de Harmônicas e Faltas")
+st.title("📊 Análise Visual de Harmônicas (I & V)")
 st.markdown("""
-Comparação visual avançada com indicadores de **THD (Distorção Harmônica Total)** e 
-**Mapas de Calor** para identificar padrões rapidamente.
+Comparação visual com foco na **Corrente** seguida pela **Tensão**.
+Indicadores de **THD** e Tabelas de Harmônicas incluídos.
 """)
 
 # --- Funções Auxiliares ---
@@ -31,13 +31,11 @@ def calcular_fft(time, signal):
 
 def calcular_thd(freqs, mags):
     """Calcula THD (%) considerando fundamental em ~60Hz."""
-    # Encontrar índice da fundamental (60Hz)
     idx_60 = (np.abs(freqs - 60)).argmin()
     mag_fund = mags[idx_60]
     
     if mag_fund == 0: return 0
     
-    # Soma dos quadrados das harmônicas (até 50ª ordem ou limite)
     harm_sq_sum = 0
     for h in range(2, 51):
         target = 60 * h
@@ -55,7 +53,7 @@ def ordenar_pontos(lista_encontrada):
     def get_sort_key(ponto):
         if ponto in ordem_desejada:
             return ordem_desejada.index(ponto)
-        return 999  # Coloca no final se não estiver na lista
+        return 999 
 
     return sorted(lista_encontrada, key=get_sort_key)
 
@@ -64,14 +62,11 @@ def plotar_analise_visual(titulo, dados_cache, var_name, max_freq, min_mag):
     st.markdown(f"## ⚡ {titulo}")
     
     fases_cfg = [('Fase A', 0, 'red'), ('Fase B', 1, 'blue'), ('Fase C', 2, 'green')]
-    
-    # Container para Heatmap (Tabela Visual)
     dados_heatmap = []
 
     # Loop principal das fases
     for fase_nome, idx_fase, cor_base in fases_cfg:
         
-        # 1. Coleta de dados e cálculo de métricas para esta fase
         thd_results = {}
         plot_traces = []
         
@@ -97,8 +92,7 @@ def plotar_analise_visual(titulo, dados_cache, var_name, max_freq, min_mag):
                 thd = calcular_thd(freqs, mags)
                 thd_results[fname] = thd
                 
-                # Dados para Heatmap
-                # Salva as 5 maiores harmônicas para a tabela
+                # Dados para Tabela
                 for h in range(2, 10): # 2ª até 9ª
                     f_h = 60 * h
                     idx_h = (np.abs(freqs - f_h)).argmin()
@@ -110,10 +104,8 @@ def plotar_analise_visual(titulo, dados_cache, var_name, max_freq, min_mag):
                         'Magnitude': val_h
                     })
 
-                # Filtro para gráfico (Exclui fundamental e DC)
+                # Filtro visual
                 mask = (freqs >= 90) & (freqs <= max_freq)
-                
-                # Filtro de magnitude (limpeza visual)
                 mask_noise = mags[mask] > min_mag
                 
                 if np.any(mask_noise):
@@ -124,15 +116,14 @@ def plotar_analise_visual(titulo, dados_cache, var_name, max_freq, min_mag):
                         opacity=0.75
                     ))
 
-        # 2. Exibição Visual (Métricas + Gráfico)
+        # Exibição Visual (Métricas + Gráfico)
         st.markdown(f"#### {fase_nome}")
         
-        # Colunas de Métricas (THD)
         if thd_results:
             cols_metrics = st.columns(len(thd_results))
             for i, (arq, val_thd) in enumerate(thd_results.items()):
                 delta_color = "normal"
-                if val_thd > 5.0: delta_color = "inverse" # Destaca se THD for alto (>5%)
+                if val_thd > 5.0: delta_color = "inverse"
                 cols_metrics[i].metric(
                     label=f"THD - {arq}", 
                     value=f"{val_thd:.2f}%", 
@@ -140,7 +131,6 @@ def plotar_analise_visual(titulo, dados_cache, var_name, max_freq, min_mag):
                     delta_color=delta_color
                 )
 
-        # Gráfico
         fig = go.Figure(data=plot_traces)
         fig.update_layout(
             height=350,
@@ -153,28 +143,25 @@ def plotar_analise_visual(titulo, dados_cache, var_name, max_freq, min_mag):
         st.plotly_chart(fig, use_container_width=True)
         st.divider()
 
-    # 3. Tabela Heatmap Global para esta variável
+    # Tabela Global Comparativa (Sem gradiente de cor para evitar erros)
     if dados_heatmap:
-        st.markdown("### 🔥 Mapa de Calor das Harmônicas (Comparativo)")
+        st.markdown("### 📋 Tabela Comparativa de Harmônicas")
         df_heat = pd.DataFrame(dados_heatmap)
         
-        # Pivotar para formato de matriz: Linhas=Harmônicas, Colunas=Arquivos
-        # Vamos criar um heatmap separado por fase para não misturar demais
-        tab_h1, tab_h2, tab_h3 = st.tabs(["Mapa Fase A", "Mapa Fase B", "Mapa Fase C"])
+        tab_h1, tab_h2, tab_h3 = st.tabs(["Fase A", "Fase B", "Fase C"])
         
         for i, (tab, f_nome) in enumerate(zip([tab_h1, tab_h2, tab_h3], ['Fase A', 'Fase B', 'Fase C'])):
             with tab:
                 df_fase = df_heat[df_heat['Fase'] == f_nome]
                 if not df_fase.empty:
-                    # Tabela pivotada
                     pivot = df_fase.pivot_table(
                         index='Harmônica', 
                         columns='Arquivo', 
                         values='Magnitude'
                     )
-                    # Aplicação do gradiente de cor (Heatmap)
+                    # CORREÇÃO: Usando formatação simples para evitar erro de Matplotlib
                     st.dataframe(
-                        pivot.style.background_gradient(cmap='Reds', axis=None).format("{:.4f}"),
+                        pivot.style.format("{:.4f}"),
                         use_container_width=True
                     )
                 else:
@@ -189,7 +176,6 @@ max_freq_view = st.sidebar.slider("Zoom Frequência (Hz)", 120, 5000, 1200)
 min_mag_view = st.sidebar.number_input("Filtro Magnitude Mínima", 0.0, 1.0, 0.001, format="%.4f")
 
 if uploaded_files:
-    # Carga de Dados
     data_cache = {}
     all_vars = set()
     
@@ -201,13 +187,11 @@ if uploaded_files:
                 all_vars.update([v for v in dir(mat['ts']) if v.startswith('ts_')])
         except: pass
 
-    # Identificar Pontos
     pontos_set = set()
     for v in all_vars:
         match = re.search(r'ts_[VI]_(.+)', v)
         if match: pontos_set.add(match.group(1))
     
-    # ORDENAÇÃO SOLICITADA
     lista_ordenada = ordenar_pontos(list(pontos_set))
 
     # Criação das Abas Principais
@@ -216,22 +200,26 @@ if uploaded_files:
 
     for i, ponto in enumerate(lista_ordenada):
         with tabs[i]:
-            col_v, col_i = st.columns(2)
             
-            # Verificar Tensão
+            # --- ORDEM INVERTIDA: PRIMEIRO CORRENTE (I), DEPOIS TENSÃO (V) ---
+            
+            # 1. Corrente
+            var_i = f"ts_I_{ponto}"
+            tem_i = any(hasattr(d['ts'], var_i) for d in data_cache.values())
+            
+            if tem_i:
+                plotar_analise_visual(f"Corrente {ponto}", data_cache, var_i, max_freq_view, min_mag_view)
+            
+            # Separador se houver os dois
+            if tem_i:
+                st.markdown("---") 
+
+            # 2. Tensão
             var_v = f"ts_V_{ponto}"
             tem_v = any(hasattr(d['ts'], var_v) for d in data_cache.values())
             
             if tem_v:
                 plotar_analise_visual(f"Tensão {ponto}", data_cache, var_v, max_freq_view, min_mag_view)
-            
-            # Verificar Corrente (em baixo se quiser fluxo contínuo, ou separado)
-            var_i = f"ts_I_{ponto}"
-            tem_i = any(hasattr(d['ts'], var_i) for d in data_cache.values())
-            
-            if tem_i:
-                st.markdown("---") # Separador visual forte
-                plotar_analise_visual(f"Corrente {ponto}", data_cache, var_i, max_freq_view, min_mag_view)
 
 else:
     st.info("Por favor, carregue os arquivos .mat na barra lateral.")
