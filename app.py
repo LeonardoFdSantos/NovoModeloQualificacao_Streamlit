@@ -34,17 +34,13 @@ def extrair_picos_harmonicos(freqs, mags, frequencia_fundamental=60, max_ordem=1
     ao redor de cada frequência harmônica teórica.
     """
     dados_harmonicas = {} # {Ordem: Magnitude}
+    janela_busca = 5.0 # Hz
     
-    janela_busca = 5.0 # Hz (Busca pico em +/- 5Hz da harmônica)
-    
-    for ordem in range(2, max_ordem + 1): # Começa da 2ª harmônica
+    for ordem in range(2, max_ordem + 1): 
         freq_alvo = frequencia_fundamental * ordem
-        
-        # Máscara para olhar apenas na janela ao redor da harmônica
         mask_janela = (freqs >= freq_alvo - janela_busca) & (freqs <= freq_alvo + janela_busca)
         
         if np.any(mask_janela):
-            # Pega o maior pico dentro dessa janela
             pico_mag = np.max(mags[mask_janela])
             dados_harmonicas[ordem] = pico_mag
         else:
@@ -58,10 +54,9 @@ def calcular_thd(freqs, mags):
     if mag_fund == 0: return 0
     
     harm_sq_sum = 0
-    for h in range(2, 40): # THD até 40ª
+    for h in range(2, 40): 
         target = 60 * h
         if target > freqs[-1]: break
-        # Busca simples pelo mais próximo
         idx = (np.abs(freqs - target)).argmin()
         harm_sq_sum += mags[idx]**2
         
@@ -78,7 +73,6 @@ def ordenar_pontos(lista_encontrada):
 def plotar_janelamento_harmonico(titulo, dados_cache, var_name):
     st.markdown(f"### 🔍 {titulo} - Comparativo por Harmônica")
     
-    # Abas internas para Fases (para não poluir tudo num gráfico só)
     tab_a, tab_b, tab_c = st.tabs(["Fase A", "Fase B", "Fase C"])
     
     fases_cfg = [
@@ -91,12 +85,9 @@ def plotar_janelamento_harmonico(titulo, dados_cache, var_name):
         with aba:
             fig = go.Figure()
             
-            # Para cada arquivo carregado...
             for fname, content in dados_cache.items():
                 if hasattr(content['ts'], var_name):
                     signal_obj = getattr(content['ts'], var_name)
-                    
-                    # Extração segura
                     try:
                         t = signal_obj.Time
                         y_raw = signal_obj.Data
@@ -104,46 +95,40 @@ def plotar_janelamento_harmonico(titulo, dados_cache, var_name):
                         t = signal_obj.time
                         y_raw = signal_obj.signals.values
                     
-                    # Seleção da Fase
                     if y_raw.ndim > 1 and y_raw.shape[1] > idx_fase:
                         y_sig = y_raw[:, idx_fase]
                     else:
                         if idx_fase > 0: continue
                         y_sig = y_raw.flatten()
                     
-                    # FFT
                     freqs, mags, _ = calcular_fft(t, y_sig)
+                    picos = extrair_picos_harmonicos(freqs, mags, max_ordem=13)
                     
-                    # --- JANELAMENTO: Extrair picos exatos ---
-                    picos = extrair_picos_harmonicos(freqs, mags, max_ordem=13) # Até 13ª ordem
-                    
-                    # Preparar dados para plotagem
                     ordens = [f"{o}ª ({o*60}Hz)" for o in picos.keys()]
                     valores = list(picos.values())
                     
-                    # Adiciona barra agrupada para este arquivo
                     fig.add_trace(go.Bar(
                         x=ordens, 
                         y=valores,
                         name=fname,
-                        text=[f"{v:.3f}" for v in valores], # Mostra valor no topo
+                        text=[f"{v:.3f}" for v in valores],
                         textposition='auto'
                     ))
             
             fig.update_layout(
-                title=f"Comparação Direta de Harmônicas ({nome_fase})",
-                xaxis_title="Ordem Harmônica (Janela)",
+                title=f"Comparação Direta ({nome_fase})",
+                xaxis_title="Ordem Harmônica",
                 yaxis_title="Magnitude",
-                barmode='group', # ISSO FAZ O AGRUPAMENTO LADO A LADO
+                barmode='group',
                 height=400,
                 legend=dict(orientation="h", y=-0.2),
                 margin=dict(l=20, r=20, t=40, b=20)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            # CORREÇÃO AQUI: Adicionado key único
+            st.plotly_chart(fig, use_container_width=True, key=f"janela_{var_name}_{nome_fase}")
 
 # --- Plotagem: Espectro Geral (Contexto) ---
 def plotar_espectro_geral(titulo, dados_cache, var_name, max_freq, min_mag):
-    # (Esta função mantém o gráfico de linhas contínuo para contexto geral)
     st.markdown(f"#### 📉 Espectro Geral (Visão Panorâmica) - {titulo}")
     
     fases = [('Fase A', 0), ('Fase B', 1), ('Fase C', 2)]
@@ -156,7 +141,6 @@ def plotar_espectro_geral(titulo, dados_cache, var_name, max_freq, min_mag):
             
             for fname, content in dados_cache.items():
                 if hasattr(content['ts'], var_name):
-                    # ... (Lógica de extração igual) ...
                     sig = getattr(content['ts'], var_name)
                     try: d = sig.Data 
                     except: d = sig.signals.values
@@ -176,7 +160,7 @@ def plotar_espectro_geral(titulo, dados_cache, var_name, max_freq, min_mag):
                     mask_noise = mags[mask] > min_mag
                     
                     if np.any(mask_noise):
-                        fig.add_trace(go.Scatter( # Scatter/Linha para visão geral
+                        fig.add_trace(go.Scatter(
                             x=freqs[mask][mask_noise],
                             y=mags[mask][mask_noise],
                             name=fname,
@@ -189,10 +173,9 @@ def plotar_espectro_geral(titulo, dados_cache, var_name, max_freq, min_mag):
                 yaxis_title="Mag",
                 height=250,
                 margin=dict(l=0, r=0, t=30, b=0),
-                showlegend=False # Legenda polui gráficos pequenos
+                showlegend=False
             )
-            st.plotly_chart(fig, use_container_width=True)
-            # Mostra THD resumido abaixo
+            st.plotly_chart(fig, use_container_width=True, key=f"espectro_{var_name}_{f_nome}")
             st.caption("THD: " + " | ".join(thd_msg))
 
 # --- Main App ---
@@ -212,14 +195,12 @@ if uploaded_files:
                 all_vars.update([v for v in dir(mat['ts']) if v.startswith('ts_')])
         except: pass
 
-    # Ordenação
     pontos = set()
     for v in all_vars:
         match = re.search(r'ts_[VI]_(.+)', v)
         if match: pontos.add(match.group(1))
     lista_ordenada = ordenar_pontos(list(pontos))
 
-    # Abas Principais (Pontos)
     tabs = st.tabs([f"📍 {p}" for p in lista_ordenada])
 
     for i, ponto in enumerate(lista_ordenada):
@@ -230,9 +211,7 @@ if uploaded_files:
             # --- 1. SEÇÃO CORRENTE (I) ---
             if any(hasattr(d['ts'], var_i) for d in data_cache.values()):
                 st.subheader(f"Corrente: {ponto}")
-                # 1.1 - O Novo Gráfico de Janelamento (O Destaque)
                 plotar_janelamento_harmonico(f"Corrente {ponto}", data_cache, var_i)
-                # 1.2 - O Gráfico Geral (Para contexto)
                 with st.expander("Ver Espectro Contínuo (Detalhe de Frequência)"):
                     plotar_espectro_geral(f"I_{ponto}", data_cache, var_i, max_freq_view, 0.001)
                 st.divider()
