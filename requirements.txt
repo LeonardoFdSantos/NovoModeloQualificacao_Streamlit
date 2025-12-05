@@ -1,6 +1,7 @@
 streamlit
-plotly
 scipy
 numpy
+plotly
 pandas
+matplotlib
 kaleido==0.2.1
