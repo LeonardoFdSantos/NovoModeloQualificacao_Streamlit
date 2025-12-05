@@ -4,21 +4,18 @@ import numpy as np
 import plotly.graph_objects as go
 import pandas as pd
 
-# Configuração da página
-st.set_page_config(page_title="Análise Harmônica Trifásica", layout="wide")
+# Configuração da página para ocupar toda a largura (Wide Mode)
+st.set_page_config(page_title="Comparador de Harmônicas IEEE 34", layout="wide")
 
-st.title("📊 Análise Harmônica Trifásica (até 10kHz)")
+st.title("📊 Comparador de Faltas e Harmônicas (Multi-Arquivo)")
 st.markdown("""
-Esta ferramenta analisa a distorção harmônica ignorando a fundamental (60Hz).
-Os dados são separados automaticamente por fase (A, B, C) e o espectro vai até 10.000 Hz.
+Esta ferramenta compara a **Distorção Harmônica** entre múltiplos arquivos `.mat`.
+Os gráficos superiores mostram a sobreposição de todos os arquivos para cada Fase (A, B, C).
 """)
 
-# --- Barra Lateral: Upload ---
-st.sidebar.header("Carregar Dados")
-uploaded_files = st.sidebar.file_uploader("Carregue os arquivos .mat", type=["mat"], accept_multiple_files=True)
-
+# --- Função de Cálculo FFT ---
 def calcular_fft(time, signal):
-    """Calcula FFT e retorna frequências, magnitudes e taxa de amostragem."""
+    """Retorna frequências, magnitudes e taxa de amostragem."""
     dt = np.mean(np.diff(time))
     fs = 1 / dt
     n = len(signal)
@@ -33,138 +30,174 @@ def calcular_fft(time, signal):
     
     return freqs, magnitude, fs
 
-def renderizar_aba_fase(t, y, nome_fase, cor_grafico):
-    """Função auxiliar para gerar o conteúdo de cada aba (Fase A, B ou C)."""
-    
-    # 1. Cálculo da FFT
-    freqs, mag, fs = calcular_fft(t, y)
-    nyquist = fs / 2  # Limite teórico (10kHz para fs=20kHz)
+# --- Barra Lateral: Configurações ---
+st.sidebar.header("1. Carregar Dados")
+uploaded_files = st.sidebar.file_uploader(
+    "Selecione os arquivos .mat para comparar", 
+    type=["mat"], 
+    accept_multiple_files=True
+)
 
-    # 2. Filtro: Remover Fundamental e DC (> 90Hz)
-    mask_harmonics = freqs >= 90
-    freqs_h = freqs[mask_harmonics]
-    mag_h = mag[mask_harmonics]
+# Configurações de Visualização
+st.sidebar.header("2. Configuração do Gráfico")
+max_freq_view = st.sidebar.slider("Frequência Máxima (Zoom)", 120, 10000, 2000, step=100)
+min_mag_view = st.sidebar.number_input("Magnitude Mínima (Filtro Visual)", value=0.001, format="%.4f")
 
-    # --- Layout da Aba ---
-    col_graf, col_dados = st.columns([3, 1])
-
-    with col_graf:
-        st.subheader(f"Espectro de Frequência - {nome_fase}")
-        
-        # Slider de Zoom (até Nyquist)
-        max_view = st.slider(f"Frequência Máxima ({nome_fase})", 
-                             min_value=500, 
-                             max_value=int(nyquist), 
-                             value=2000, # Valor inicial amigável, mas pode ir até 10k
-                             step=100)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=freqs_h, 
-            y=mag_h, 
-            name=f'Harmônicas {nome_fase}',
-            marker_color=cor_grafico
-        ))
-        
-        fig.update_layout(
-            xaxis_title="Frequência (Hz)",
-            yaxis_title="Magnitude",
-            xaxis_range=[90, max_view], # Começa em 90Hz
-            height=450,
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col_dados:
-        st.subheader(f"Tabela ({nome_fase})")
-        st.caption("Maiores magnitudes (Múltiplos de 60Hz)")
-
-        # Gerar Tabela de Harmônicas (2ª até 50ª ordem ou limite de Nyquist)
-        harmonics_data = []
-        fundamental = 60
-        
-        for order in range(2, 168): # 167 * 60 ~= 10020 Hz
-            target_f = fundamental * order
-            
-            if target_f > nyquist:
-                break
-                
-            # Encontrar pico mais próximo
-            idx_closest = (np.abs(freqs - target_f)).argmin()
-            measured_f = freqs[idx_closest]
-            val = mag[idx_closest]
-            
-            # Só mostrar na tabela se tiver relevância mínima para não poluir
-            if val > 1e-4: 
-                harmonics_data.append({
-                    "Ordem": f"{order}ª",
-                    "Freq (Hz)": f"{measured_f:.0f}",
-                    "Mag": val  # Mantém float para ordenação correta se precisar
-                })
-        
-        if harmonics_data:
-            df_h = pd.DataFrame(harmonics_data)
-            # Formatação para exibição
-            st.dataframe(
-                df_h.style.format({"Mag": "{:.4f}"}), 
-                use_container_width=True,
-                height=400
-            )
-        else:
-            st.info("Sem harmônicas significativas.")
-
-# --- Lógica Principal ---
 if uploaded_files:
-    file_map = {f.name: f for f in uploaded_files}
-    selected_file = st.selectbox("Arquivo:", list(file_map.keys()))
+    # --- Passo 1: Leitura e Identificação de Variáveis Comuns ---
+    data_cache = {}
+    common_vars = None
     
-    if selected_file:
+    for uploaded_file in uploaded_files:
         try:
-            mat = sio.loadmat(file_map[selected_file], squeeze_me=True, struct_as_record=False)
-            
+            # Lê o arquivo
+            mat = sio.loadmat(uploaded_file, squeeze_me=True, struct_as_record=False)
             if 'ts' in mat:
                 ts = mat['ts']
-                vars_list = [v for v in dir(ts) if v.startswith('ts_')]
+                # Lista variáveis deste arquivo (ex: ts_I_800)
+                vars_this_file = set([v for v in dir(ts) if v.startswith('ts_')])
                 
-                sel_var = st.selectbox("Sinal para Análise:", vars_list)
-                signal_obj = getattr(ts, sel_var)
+                # Armazena no cache
+                data_cache[uploaded_file.name] = {'ts': ts, 'vars': vars_this_file}
                 
-                # Extração de Tempo e Dados
-                try:
-                    t = signal_obj.Time
-                    y_raw = signal_obj.Data
-                except:
-                    t = signal_obj.time
-                    y_raw = signal_obj.signals.values
-
-                # --- Verificação de Fases ---
-                # Se for array 2D com 3 colunas, assume Trifásico
-                if y_raw.ndim > 1 and y_raw.shape[1] == 3:
-                    st.success(f"Sinal Trifásico Identificado (Fs = {1/np.mean(np.diff(t)):.0f} Hz)")
-                    
-                    # Criação das Abas
-                    tab_a, tab_b, tab_c = st.tabs(["⚡ Fase A", "⚡ Fase B", "⚡ Fase C"])
-                    
-                    with tab_a:
-                        renderizar_aba_fase(t, y_raw[:, 0], "Fase A", "red")
-                    with tab_b:
-                        renderizar_aba_fase(t, y_raw[:, 1], "Fase B", "blue")
-                    with tab_c:
-                        renderizar_aba_fase(t, y_raw[:, 2], "Fase C", "green")
-                        
-                elif y_raw.ndim > 1 and y_raw.shape[1] == 2:
-                     # Caso raro de 2 fases/sinais
-                    tab1, tab2 = st.tabs(["Canal 1", "Canal 2"])
-                    with tab1: renderizar_aba_fase(t, y_raw[:, 0], "Canal 1", "orange")
-                    with tab2: renderizar_aba_fase(t, y_raw[:, 1], "Canal 2", "cyan")
+                # Atualiza interseção de variáveis (para garantir que selecionamos algo que existe em todos)
+                if common_vars is None:
+                    common_vars = vars_this_file
                 else:
-                    # Monofásico
-                    st.info("Sinal Monofásico")
-                    if y_raw.ndim > 1: y_raw = y_raw.flatten()
-                    renderizar_aba_fase(t, y_raw, "Sinal Único", "purple")
-
+                    common_vars = common_vars.intersection(vars_this_file)
             else:
-                st.error("Estrutura 'ts' não encontrada no arquivo.")
-                
+                st.warning(f"Arquivo ignorado (sem struct 'ts'): {uploaded_file.name}")
         except Exception as e:
-            st.error(f"Erro ao ler arquivo: {e}")
+            st.error(f"Erro ao ler {uploaded_file.name}: {e}")
+
+    if common_vars:
+        # Seletor de Variável
+        sorted_vars = sorted(list(common_vars))
+        selected_var = st.selectbox("Selecione o Sinal para Comparar (Comum a todos os arquivos):", sorted_vars)
+        
+        # --- Passo 2: Processamento dos Dados para o Gráfico ---
+        # Estrutura para plotagem: { 'Fase A': [ (nome_arq, x, y), ... ], 'Fase B': ... }
+        plot_data = {'Fase A': [], 'Fase B': [], 'Fase C': []}
+        
+        for fname, content in data_cache.items():
+            ts_struct = content['ts']
+            signal_obj = getattr(ts_struct, selected_var)
+            
+            # Extração Time/Data
+            try:
+                t = signal_obj.Time
+                y_raw = signal_obj.Data
+            except:
+                t = signal_obj.time
+                y_raw = signal_obj.signals.values
+            
+            # Cálculo FFT para cada fase
+            # Verifica se é trifásico (N, 3) ou monofásico (N,)
+            if y_raw.ndim > 1 and y_raw.shape[1] >= 3:
+                fases = [('Fase A', 0), ('Fase B', 1), ('Fase C', 2)]
+            elif y_raw.ndim > 1 and y_raw.shape[1] == 2:
+                 fases = [('Fase A', 0), ('Fase B', 1)] # Assume A e B
+            else:
+                fases = [('Fase A', None)] # Monofásico trata como A
+
+            for fase_name, idx in fases:
+                # Seleciona dados da fase
+                y_sig = y_raw[:, idx] if idx is not None else y_raw.flatten()
+                
+                # FFT
+                freqs, mags, fs = calcular_fft(t, y_sig)
+                
+                # Filtro: >= 90Hz (Remove Fundamental e DC)
+                mask = freqs >= 90
+                
+                # Armazena para plotagem
+                plot_data[fase_name].append({
+                    'file': fname,
+                    'freqs': freqs[mask],
+                    'mags': mags[mask]
+                })
+
+        # --- Passo 3: Visualização "COMPARATIVO DIRETO" (Todas as fases na mesma tela) ---
+        st.divider()
+        st.subheader(f"📈 Comparativo: {selected_var}")
+        
+        # Layout de Colunas para Fases
+        cols = st.columns(3)
+        phase_titles = ['Fase A', 'Fase B', 'Fase C']
+        
+        for i, col in enumerate(cols):
+            phase = phase_titles[i]
+            with col:
+                st.markdown(f"**{phase}**")
+                
+                fig = go.Figure()
+                
+                # Adiciona um traço para cada arquivo nesta fase
+                for dataset in plot_data.get(phase, []):
+                    # Filtra visualização pelo Slider
+                    mask_view = dataset['freqs'] <= max_freq_view
+                    x_view = dataset['freqs'][mask_view]
+                    y_view = dataset['mags'][mask_view]
+                    
+                    # Filtra magnitude para limpar gráfico (opcional)
+                    mask_noise = y_view > min_mag_view
+                    
+                    fig.add_trace(go.Bar(
+                        x=x_view[mask_noise],
+                        y=y_view[mask_noise],
+                        name=dataset['file'], # Nome do arquivo na legenda
+                        opacity=0.8
+                    ))
+                
+                fig.update_layout(
+                    xaxis_title="Freq (Hz)",
+                    yaxis_title="Mag",
+                    xaxis_range=[90, max_freq_view],
+                    legend=dict(orientation="h", y=-0.2), # Legenda em baixo
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    height=400
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        # --- Passo 4: Seção "POR ARQUIVO" (Detalhamento) ---
+        st.divider()
+        st.subheader("📂 Detalhamento por Arquivo")
+        
+        for fname in data_cache.keys():
+            with st.expander(f"Detalhes: {fname}", expanded=False):
+                # Recupera os dados calculados anteriormente para este arquivo
+                # Filtra plot_data para pegar apenas este arquivo nas 3 fases
+                
+                col_d1, col_d2, col_d3 = st.columns(3)
+                cols_detalhe = [col_d1, col_d2, col_d3]
+                
+                for i, phase in enumerate(phase_titles):
+                    # Encontra os dados deste arquivo e fase específica
+                    dados_fase = next((d for d in plot_data[phase] if d['file'] == fname), None)
+                    
+                    if dados_fase:
+                        with cols_detalhe[i]:
+                            # Tabela de Picos (Top 10 harmônicas)
+                            df_picos = pd.DataFrame({
+                                'Freq (Hz)': dados_fase['freqs'],
+                                'Mag': dados_fase['mags']
+                            })
+                            # Pega apenas picos relevantes (> min_mag_view)
+                            df_picos = df_picos[df_picos['Mag'] > min_mag_view]
+                            # Ordena por magnitude
+                            df_picos = df_picos.sort_values(by='Mag', ascending=False).head(10)
+                            
+                            st.markdown(f"**{phase} - Top Harmônicas**")
+                            if not df_picos.empty:
+                                st.dataframe(
+                                    df_picos.style.format("{:.4f}"), 
+                                    hide_index=True,
+                                    use_container_width=True
+                                )
+                            else:
+                                st.info("Sem picos significativos.")
+
+    else:
+        st.info("Nenhuma variável comum encontrada nos arquivos selecionados ou nenhum arquivo carregado.")
+else:
+    st.info("Utilize o menu lateral para carregar os arquivos .mat.")
