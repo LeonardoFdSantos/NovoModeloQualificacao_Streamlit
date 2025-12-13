@@ -1,7 +1,7 @@
 import io
 import numpy as np
 import streamlit as st
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 
 from scipy.io import loadmat
 from scipy.signal import windows
@@ -9,40 +9,28 @@ from scipy.fft import fft, fftfreq
 
 
 # -----------------------------
-# Config Streamlit
+# Streamlit config
 # -----------------------------
 st.set_page_config(
-    page_title="IEEE34 – Visualizador .MAT (ABC/Clarke/FFT/THD)",
+    page_title="IEEE34 – Visualizador .MAT (Plotly/Clarke/FFT/THD)",
     layout="wide"
 )
 
+
 # -----------------------------
-# Funções Núcleo: Clarke, FFT, THD
+# Core math
 # -----------------------------
 def clarke_transform(a, b, c, mode="power"):
-    """
-    Transformada de Clarke (alpha-beta).
-    mode:
-      - "power": k = sqrt(2/3)  (invariante de potência)
-      - "amp":   k = 2/3        (invariante de amplitude)
-    """
     if mode == "amp":
         k = 2/3
     else:
         k = np.sqrt(2/3)
-
     alpha = k * (a - 0.5*b - 0.5*c)
     beta  = k * ((np.sqrt(3)/2)*b - (np.sqrt(3)/2)*c)
     return alpha, beta
 
 
 def compute_fft_rms(signal, fs, window="hann", remove_mean=True):
-    """
-    FFT unilateral com magnitude RMS.
-    - remove_mean: remove componente DC antes
-    - window: 'hann' ou 'rect'
-    Retorna: freqs (>=0), X_rms
-    """
     signal = np.asarray(signal).squeeze()
     N = len(signal)
     if N < 4 or fs <= 0:
@@ -65,28 +53,19 @@ def compute_fft_rms(signal, fs, window="hann", remove_mean=True):
     freqs = freqs[pos]
     X = X[pos]
 
-    # Correção de ganho da janela
-    # (2/sum(w)) -> unilateral (exceto DC/Nyquist; aqui usamos forma prática)
+    # magnitude unilateral corrigida + RMS
     X_mag = (2.0 / np.sum(w)) * np.abs(X)
     X_rms = X_mag / np.sqrt(2)
-
     return freqs, X_rms
 
 
 def compute_thd_percent(freqs, spectrum_rms, f_fund=60.0, h_max=25, tol_hz=1.0):
-    """
-    THD% = sqrt(sum_{h=2..H} Xh^2) / X1 * 100
-    - freqs: eixo de frequência
-    - spectrum_rms: magnitude RMS
-    - tol_hz: tolerância para achar bin próximo da harmônica
-    """
     if len(freqs) == 0:
         return np.nan
 
     freqs = np.asarray(freqs)
     spec = np.asarray(spectrum_rms)
 
-    # Fundamental
     idx = np.where(np.abs(freqs - f_fund) <= tol_hz)[0]
     if len(idx) == 0:
         return np.nan
@@ -101,87 +80,61 @@ def compute_thd_percent(freqs, spectrum_rms, f_fund=60.0, h_max=25, tol_hz=1.0):
         if len(ih) > 0:
             harm_sq += spec[ih[0]]**2
 
-    thd = np.sqrt(harm_sq) / X1
-    return float(thd * 100.0)
+    return float(np.sqrt(harm_sq) / X1 * 100.0)
 
 
 # -----------------------------
-# Parser do .MAT no seu formato
+# Robust-ish MATLAB struct access
 # -----------------------------
-def _mat_struct_getfield(obj, name):
-    """
-    Acessa field em MATLAB struct carregado pelo scipy.
-    Lida com:
-      - mat_struct (atributo)
-      - ndarray dtype.names
-    """
-    # caso 1: mat_struct com atributo
+def _mat_getfield(obj, name):
     if hasattr(obj, name):
         return getattr(obj, name)
-
-    # caso 2: ndarray/record com dtype.names
     try:
         if hasattr(obj, "dtype") and obj.dtype.names and name in obj.dtype.names:
             return obj[name]
     except Exception:
         pass
-
     return None
 
 
 def extract_ts_from_mat(mat, point_name):
     """
-    Extrai Time/Data do formato:
+    Espera:
       mat['ts'] -> struct
-      mat['ts'].ts_I_800.Time / .Data
-    Retorna: (t, X) ou (None, None)
-
-    X pode ser:
-      - (N,3) trifásico
-      - (N,) monofásico
+      ts.ts_<POINT>.Time / .Data
     """
     if 'ts' not in mat:
         return None, None
 
     ts_root = mat['ts']
-
-    # SciPy pode trazer 'ts' como:
-    # - mat_struct
-    # - ndarray object (1,1)
-    # vamos tentar normalizar
     if isinstance(ts_root, np.ndarray):
-        # muitas vezes vem (1,1)
         try:
             ts_root = ts_root.squeeze()
-            # se virou array de objetos, pega o item
             if isinstance(ts_root, np.ndarray) and ts_root.dtype == object:
                 ts_root = ts_root.item()
         except Exception:
             pass
 
     key = f"ts_{point_name}"
-    entry = _mat_struct_getfield(ts_root, key)
+    entry = _mat_getfield(ts_root, key)
     if entry is None:
         return None, None
 
-    # entry pode vir como ndarray (1,1) ou mat_struct direto
     if isinstance(entry, np.ndarray):
         entry = entry.squeeze()
         if isinstance(entry, np.ndarray) and entry.dtype == object:
             entry = entry.item()
 
-    time = _mat_struct_getfield(entry, "Time")
-    data = _mat_struct_getfield(entry, "Data")
+    time = _mat_getfield(entry, "Time")
+    data = _mat_getfield(entry, "Data")
     if time is None or data is None:
         return None, None
 
-    t = np.array(time).squeeze()
-    x = np.array(data)
+    t = np.asarray(time).squeeze()
+    x = np.asarray(data)
     x = np.squeeze(x)
 
-    # Força consistência:
-    # - se trifásico, esperamos (N,3)
-    # - se vier (3,N), transpor
+    # se vier (3,N) e t for (N,), transpõe
     if x.ndim == 2 and x.shape[0] == 3 and x.shape[1] == t.shape[0]:
         x = x.T
 
@@ -192,19 +145,123 @@ def extract_m1_location(mat):
     if 'm1_location' not in mat:
         return None
     try:
-        return float(np.array(mat['m1_location']).squeeze())
+        return float(np.asarray(mat['m1_location']).squeeze())
     except Exception:
         return None
 
 
 # -----------------------------
+# Plotly helpers
+# -----------------------------
+def fig_timeseries_abc(t, a, b, c, idx=None, title="ABC"):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=t, y=a, mode="lines", name="A"))
+    fig.add_trace(go.Scatter(x=t, y=b, mode="lines", name="B"))
+    fig.add_trace(go.Scatter(x=t, y=c, mode="lines", name="C"))
+
+    if idx is not None:
+        fig.add_trace(go.Scatter(x=[t[idx]], y=[a[idx]], mode="markers", name="A @t", marker=dict(size=10)))
+        fig.add_trace(go.Scatter(x=[t[idx]], y=[b[idx]], mode="markers", name="B @t", marker=dict(size=10)))
+        fig.add_trace(go.Scatter(x=[t[idx]], y=[c[idx]], mode="markers", name="C @t", marker=dict(size=10)))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Tempo (s)",
+        yaxis_title="Amplitude",
+        height=360,
+        margin=dict(l=30, r=20, t=50, b=35),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)")
+    return fig
+
+
+def fig_timeseries_ab(t, alpha, beta, idx=None, title="Clarke αβ (tempo)"):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=t, y=alpha, mode="lines", name="α"))
+    fig.add_trace(go.Scatter(x=t, y=beta, mode="lines", name="β"))
+    if idx is not None:
+        fig.add_trace(go.Scatter(x=[t[idx]], y=[alpha[idx]], mode="markers", name="α @t", marker=dict(size=10)))
+        fig.add_trace(go.Scatter(x=[t[idx]], y=[beta[idx]], mode="markers", name="β @t", marker=dict(size=10)))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Tempo (s)",
+        yaxis_title="Amplitude",
+        height=320,
+        margin=dict(l=30, r=20, t=50, b=35),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)")
+    return fig
+
+
+def fig_alpha_beta_plane(alpha, beta, idx=None, show_traj=True, title="Plano αβ"):
+    fig = go.Figure()
+
+    if show_traj:
+        fig.add_trace(go.Scatter(
+            x=alpha, y=beta, mode="lines", name="traj",
+            line=dict(width=2)
+        ))
+
+    if idx is not None:
+        fig.add_trace(go.Scatter(
+            x=[alpha[idx]], y=[beta[idx]],
+            mode="markers", name="ponto atual",
+            marker=dict(size=12)
+        ))
+
+        # vetor (0,0) -> (alpha,beta)
+        fig.add_trace(go.Scatter(
+            x=[0, alpha[idx]], y=[0, beta[idx]],
+            mode="lines", name="vetor",
+            line=dict(width=3, dash="dot")
+        ))
+
+    # eixos
+    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=10)))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="α",
+        yaxis_title="β",
+        height=420,
+        margin=dict(l=30, r=20, t=50, b=35),
+        showlegend=True
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)", zeroline=True, zerolinecolor="rgba(220,220,220,0.25)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)", zeroline=True, zerolinecolor="rgba(220,220,220,0.25)")
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    return fig
+
+
+def fig_fft(freqs, Fa, Fb, Fc, xmax, title="FFT RMS"):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=freqs, y=Fa, mode="lines", name="A"))
+    fig.add_trace(go.Scatter(x=freqs, y=Fb, mode="lines", name="B"))
+    fig.add_trace(go.Scatter(x=freqs, y=Fc, mode="lines", name="C"))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Frequência (Hz)",
+        yaxis_title="Amplitude (RMS)",
+        height=360,
+        margin=dict(l=30, r=20, t=50, b=35),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    fig.update_xaxes(range=[0, float(xmax)], showgrid=True, gridcolor="rgba(200,200,200,0.15)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(200,200,200,0.15)")
+    return fig
+
+
+# -----------------------------
 # UI
 # -----------------------------
-st.title("📈 IEEE34 – Visualizador de Casos (.mat) com Clarke, FFT e THD")
+st.title("⚡ Visualizador IEEE34 (.mat) — Plotly + Clarke + FFT + THD")
 
 with st.sidebar:
-    st.header("Upload e Seleção")
-
+    st.header("Upload")
     uploaded = st.file_uploader(
         "Envie um ou vários arquivos .mat",
         type=["mat"],
@@ -215,191 +272,135 @@ with st.sidebar:
     point = st.selectbox("Ponto", points, index=0)
 
     st.divider()
-    st.header("Processamento")
-
-    remove_mean = st.checkbox("Remover offset (subtrair média)", value=True)
-
-    clarke_mode = st.radio(
-        "Clarke (escala k)",
-        ["power (√2/3)", "amp (2/3)"],
-        index=0
-    )
+    st.header("Interatividade")
+    remove_mean = st.checkbox("Remover offset", value=True)
+    clarke_mode = st.radio("Clarke", ["power (√2/3)", "amp (2/3)"], index=0)
     clarke_mode_key = "power" if clarke_mode.startswith("power") else "amp"
+    show_traj = st.checkbox("Mostrar trajetória αβ", value=True)
 
     st.divider()
-    st.header("FFT / THD")
-
+    st.header("FFT/THD")
     show_fft = st.checkbox("Mostrar FFT", value=True)
     window_type = st.selectbox("Janela", ["hann", "rect"], index=0)
-
-    f_fund = st.number_input("Frequência fundamental (Hz)", value=60.0, min_value=1.0, step=1.0)
-    h_max = st.slider("Máx. harmônica (THD)", min_value=5, max_value=60, value=25, step=1)
-    tol_hz = st.number_input("Tolerância p/ achar harmônica (Hz)", value=1.0, min_value=0.1, step=0.1)
-
-    fft_xmax = st.number_input("Limite X da FFT (Hz)", value=float(h_max)*float(f_fund) + 10.0, min_value=10.0, step=10.0)
-
+    f_fund = st.number_input("Fundamental (Hz)", value=60.0, min_value=1.0, step=1.0)
+    h_max = st.slider("Máx. harmônica THD", 5, 60, 25, 1)
+    tol_hz = st.number_input("Tolerância harmônica (Hz)", value=1.0, min_value=0.1, step=0.1)
+    fft_xmax = st.number_input("Limite X FFT (Hz)", value=float(h_max)*float(f_fund) + 10.0, min_value=10.0, step=10.0)
 
 if not uploaded:
-    st.info("Envie arquivos .mat na barra lateral para começar.")
+    st.info("Envie arquivos .mat no painel lateral para começar.")
     st.stop()
 
-# Carrega tudo em memória (por upload)
-# Map: filename -> mat dict
+# Carregar mats
 mats = {}
+bad = []
 for uf in uploaded:
     try:
         mats[uf.name] = loadmat(io.BytesIO(uf.getvalue()), squeeze_me=False, struct_as_record=False)
     except Exception as e:
-        st.error(f"Falha ao ler {uf.name}: {e}")
+        bad.append((uf.name, str(e)))
+
+if bad:
+    st.warning("Alguns arquivos falharam ao carregar:")
+    for name, err in bad:
+        st.write(f"- {name}: {err}")
 
 if not mats:
-    st.error("Nenhum arquivo válido carregado.")
+    st.error("Nenhum arquivo válido foi carregado.")
     st.stop()
 
-# Seleção do arquivo
 file_names = sorted(mats.keys())
-selected_file = st.sidebar.selectbox("Arquivo", file_names, index=0)
+selected_file = st.selectbox("Escolha o arquivo", file_names, index=0)
 mat = mats[selected_file]
 
-# Meta
 m1 = extract_m1_location(mat)
 
-# Layout principal
-col_left, col_right = st.columns([1.2, 1.0], gap="large")
+t, x = extract_ts_from_mat(mat, point)
+if t is None or x is None or len(np.atleast_1d(t)) == 0:
+    st.error(f"Não encontrei ts_{point}.Time/Data em {selected_file}.")
+    st.stop()
 
-with col_left:
-    st.subheader("Sinais no tempo")
+t = np.asarray(t).squeeze()
 
-    t, x = extract_ts_from_mat(mat, point)
-    if t is None or x is None or len(np.atleast_1d(t)) == 0:
-        st.warning(f"Não encontrei ts_{point}.Time/Data dentro de {selected_file}.")
-        st.stop()
+# Preparar A/B/C
+if x.ndim == 1:
+    a = np.asarray(x).squeeze()
+    b = np.zeros_like(a)
+    c = np.zeros_like(a)
+    is_three_phase = False
+elif x.ndim == 2 and x.shape[1] >= 3:
+    a, b, c = x[:, 0], x[:, 1], x[:, 2]
+    is_three_phase = True
+else:
+    a = np.asarray(x).squeeze()
+    b = np.zeros_like(a)
+    c = np.zeros_like(a)
+    is_three_phase = False
 
-    t = np.asarray(t).squeeze()
+if remove_mean:
+    a = a - np.mean(a)
+    b = b - np.mean(b)
+    c = c - np.mean(c)
 
-    # Preparar A/B/C
-    if x.ndim == 1:
-        a = np.asarray(x).squeeze()
-        b = np.zeros_like(a)
-        c = np.zeros_like(a)
-        is_three_phase = False
-    elif x.ndim == 2 and x.shape[1] >= 3:
-        a = x[:, 0]
-        b = x[:, 1]
-        c = x[:, 2]
-        is_three_phase = True
-    else:
-        # fallback
-        a = np.asarray(x).squeeze()
-        b = np.zeros_like(a)
-        c = np.zeros_like(a)
-        is_three_phase = False
+dt = np.diff(t)
+fs = 1.0 / float(np.mean(dt)) if len(dt) > 0 else 0.0
 
-    if remove_mean:
-        a = a - np.mean(a)
-        b = b - np.mean(b)
-        c = c - np.mean(c)
+# Slider de tempo (frame)
+idx = st.slider("Tempo (frame)", 0, len(t)-1, 0, 1, format="%d")
+st.caption(f"Arquivo: `{selected_file}` | Ponto: `{point}` | m1={m1} | fs≈{fs:.2f} Hz | t={t[idx]:.6f}s")
 
-    # fs
-    dt = np.diff(t)
-    fs = 1.0 / float(np.mean(dt)) if len(dt) > 0 else 0.0
+# Clarke
+if is_three_phase:
+    alpha, beta = clarke_transform(a, b, c, mode=clarke_mode_key)
+else:
+    alpha = beta = None
 
-    # Plot ABC
-    fig1, ax1 = plt.subplots(figsize=(11, 4))
-    ax1.plot(t, a, label="A")
-    ax1.plot(t, b, label="B")
-    ax1.plot(t, c, label="C")
-    ax1.set_title(f"ABC – {point} (fs≈{fs:.2f} Hz) | m1={m1}")
-    ax1.set_xlabel("Tempo (s)")
-    ax1.set_ylabel("Amplitude")
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
-    st.pyplot(fig1)
+# Layout de gráficos
+c1, c2 = st.columns([1.3, 1.0], gap="large")
 
-    # Clarke (se trifásico real)
-    if is_three_phase:
-        alpha, beta = clarke_transform(a, b, c, mode=clarke_mode_key)
-
-        fig2, ax2 = plt.subplots(figsize=(11, 4))
-        ax2.plot(t, alpha, label="α")
-        ax2.plot(t, beta, label="β")
-        ax2.set_title(f"Clarke αβ – {point} ({clarke_mode})")
-        ax2.set_xlabel("Tempo (s)")
-        ax2.set_ylabel("Amplitude")
-        ax2.grid(True, alpha=0.3)
-        ax2.legend()
-        st.pyplot(fig2)
-    else:
-        st.info("Sinal não parece trifásico (N×3). Clarke αβ foi omitido.")
-
-
-with col_right:
-    st.subheader("Metadados e Análise Espectral")
-
-    st.markdown(
-        f"""
-        **Arquivo:** `{selected_file}`  
-        **Ponto:** `{point}`  
-        **m1_location:** `{m1}`  
-        **fs estimado:** `{fs:.3f} Hz`  
-        """
+with c1:
+    st.plotly_chart(
+        fig_timeseries_abc(t, a, b, c, idx=idx, title=f"ABC (tempo) — {point}"),
+        use_container_width=True
     )
 
-    if show_fft:
-        if fs <= 0 or len(a) < 8:
-            st.warning("Não foi possível calcular FFT (fs inválido ou sinal muito curto).")
-        else:
-            freqa, F_a = compute_fft_rms(a, fs, window=window_type, remove_mean=False)
-            freqb, F_b = compute_fft_rms(b, fs, window=window_type, remove_mean=False)
-            freqc, F_c = compute_fft_rms(c, fs, window=window_type, remove_mean=False)
-
-            # THD
-            thd_a = compute_thd_percent(freqa, F_a, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-            thd_b = compute_thd_percent(freqb, F_b, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-            thd_c = compute_thd_percent(freqc, F_c, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-
-            st.markdown("### THD (%)")
-            st.table({
-                "Fase": ["A", "B", "C"],
-                "THD (%)": [
-                    None if np.isnan(thd_a) else round(thd_a, 2),
-                    None if np.isnan(thd_b) else round(thd_b, 2),
-                    None if np.isnan(thd_c) else round(thd_c, 2),
-                ]
-            })
-
-            # Plot FFT
-            st.markdown("### FFT (Magnitude RMS)")
-            fig3, ax3 = plt.subplots(figsize=(8.5, 4.2))
-            ax3.plot(freqa, F_a, label="A")
-            ax3.plot(freqb, F_b, label="B")
-            ax3.plot(freqc, F_c, label="C")
-            ax3.set_xlim(0, float(fft_xmax))
-            ax3.set_title(f"FFT RMS – janela: {window_type}")
-            ax3.set_xlabel("Frequência (Hz)")
-            ax3.set_ylabel("Amplitude (RMS)")
-            ax3.grid(True, alpha=0.3)
-            ax3.legend()
-            st.pyplot(fig3)
-
-            # Dica: mostrar top harmônicas
-            st.markdown("### Top componentes (aprox.)")
-            def top_peaks(freqs, spec, n=8, fmax=None):
-                if len(freqs) == 0:
-                    return []
-                mask = freqs <= (fmax if fmax is not None else freqs[-1])
-                f2 = freqs[mask]
-                s2 = spec[mask]
-                if len(s2) == 0:
-                    return []
-                idxs = np.argsort(s2)[::-1][:n]
-                out = [(float(f2[i]), float(s2[i])) for i in idxs]
-                return out
-
-            peaksA = top_peaks(freqa, F_a, n=8, fmax=float(fft_xmax))
-            st.write("**A:**", peaksA[:6])
+    if is_three_phase:
+        st.plotly_chart(
+            fig_timeseries_ab(t, alpha, beta, idx=idx, title=f"Clarke αβ (tempo) — {clarke_mode}"),
+            use_container_width=True
+        )
     else:
-        st.info("FFT desativada na barra lateral.")
+        st.info("Sinal não trifásico (N×3). Clarke foi omitido.")
 
+with c2:
+    if is_three_phase:
+        st.plotly_chart(
+            fig_alpha_beta_plane(alpha, beta, idx=idx, show_traj=show_traj, title="Plano αβ (trajetória + vetor)"),
+            use_container_width=True
+        )
 
-st.caption("Dica: se algum arquivo não carregar, é quase sempre diferença de estrutura do MATLAB (struct/logging). Eu adapto o parser se você me mandar um exemplo do .mat problemático.")
+    if show_fft and fs > 0 and len(a) >= 8:
+        freqs, Fa = compute_fft_rms(a, fs, window=window_type, remove_mean=False)
+        _, Fb = compute_fft_rms(b, fs, window=window_type, remove_mean=False)
+        _, Fc = compute_fft_rms(c, fs, window=window_type, remove_mean=False)
+
+        thd_a = compute_thd_percent(freqs, Fa, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
+        thd_b = compute_thd_percent(freqs, Fb, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
+        thd_c = compute_thd_percent(freqs, Fc, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
+
+        st.subheader("THD (%)")
+        st.table({
+            "Fase": ["A", "B", "C"],
+            "THD (%)": [
+                None if np.isnan(thd_a) else round(thd_a, 2),
+                None if np.isnan(thd_b) else round(thd_b, 2),
+                None if np.isnan(thd_c) else round(thd_c, 2),
+            ]
+        })
+
+        st.plotly_chart(
+            fig_fft(freqs, Fa, Fb, Fc, xmax=fft_xmax, title=f"FFT RMS — janela {window_type}"),
+            use_container_width=True
+        )
+    else:
+        st.info("FFT desativada ou fs inválido/sinal curto.")
