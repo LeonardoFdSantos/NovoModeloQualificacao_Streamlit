@@ -5,3 +5,5 @@ plotly
 pandas
 matplotlib
 kaleido==0.2.1
+pyqtgraph
+PyQt5
