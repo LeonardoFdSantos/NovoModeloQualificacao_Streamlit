@@ -13,11 +13,25 @@ from scipy.fft import fft, fftfreq
 # CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="IEEE34 – V4 (UI + Multi .mat + Animação limpa)",
+    page_title="IEEE34 – V4 (UI + Multi .mat + Animação + Botões Dark)",
     layout="wide"
 )
 
 ANGLES = np.deg2rad([0, 120, 240])  # A,B,C
+
+# Tema dark (ajuste se quiser)
+PAPER_BG = "#0f1117"
+PLOT_BG  = "#0f1117"
+GRID_CLR = "rgba(255,255,255,0.08)"
+ZERO_CLR = "rgba(255,255,255,0.10)"
+FONT_CLR = "#e6edf3"
+LEG_CLR  = "#c9d1d9"
+
+BTN_BG   = "rgba(22,27,34,0.95)"
+BTN_BRD  = "rgba(88,166,255,0.55)"
+
+SL_BG    = "rgba(22,27,34,0.75)"
+SL_BRD   = "rgba(240,246,252,0.25)"
 
 
 # =========================================================
@@ -155,7 +169,7 @@ def abc_vectors_xy(a_val, b_val, c_val):
 
 
 # =========================================================
-# ANIMATED FIGURE (slider limpo SEM sobreposição)
+# ANIMATED FIGURE (slider limpo + botões dark)
 # =========================================================
 def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="power"):
     N = len(t)
@@ -165,7 +179,7 @@ def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="p
     if frame_idxs[-1] != N - 1:
         frame_idxs.append(N - 1)
 
-    # Slider com menos steps (evita poluição visual)
+    # Slider com menos steps (evita poluição)
     max_slider_steps = 60
     if len(frame_idxs) > max_slider_steps:
         slider_idxs = np.linspace(0, len(frame_idxs) - 1, max_slider_steps).astype(int)
@@ -198,10 +212,14 @@ def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="p
     fig.add_trace(go.Scatter(x=t, y=alpha, mode="lines", name="α"), row=2, col=1)
     fig.add_trace(go.Scatter(x=t, y=beta,  mode="lines", name="β"), row=2, col=1)
 
-    fig.add_trace(go.Scatter(x=alpha, y=beta, mode="lines", name="traj αβ", line=dict(width=2)),
-                  row=2, col=2)
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=8)),
-                  row=2, col=2)
+    fig.add_trace(
+        go.Scatter(x=alpha, y=beta, mode="lines", name="traj αβ", line=dict(width=2)),
+        row=2, col=2
+    )
+    fig.add_trace(
+        go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=8)),
+        row=2, col=2
+    )
 
     # -------------------------
     # Traces dinâmicos (primeiro frame)
@@ -249,17 +267,7 @@ def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="p
                              line=dict(width=3, dash="dot")),
                   row=2, col=2)
 
-    # Índices dos traces dinâmicos (conforme ordem acima)
-    # 0..2 ABC lines
-    # 3..4 alpha/beta lines
-    # 5 traj alpha-beta
-    # 6 origin
-    # 7..9 ABC markers
-    # 10..12 phasor A,B,C
-    # 13 resultant
-    # 14..15 alpha/beta markers
-    # 16 point alpha-beta
-    # 17 vector alpha-beta
+    # Índices dos traces dinâmicos
     dynamic_trace_idxs = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
     # -------------------------
@@ -295,44 +303,8 @@ def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="p
     fig.frames = frames
 
     # -------------------------
-    # Layout + controles (sem sobreposição)
+    # Slider limpo (sem labels poluindo)
     # -------------------------
-    fig.update_layout(
-        height=860,
-        # espaço maior embaixo para slider fora do grid
-        margin=dict(l=20, r=20, t=90, b=110),
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="right", yanchor="bottom"),
-        updatemenus=[
-            dict(
-                type="buttons",
-                direction="left",
-                x=0.0, y=1.16,
-                buttons=[
-                    dict(
-                        label="▶ Play",
-                        method="animate",
-                        args=[None, {
-                            "frame": {"duration": 0, "redraw": False},
-                            "transition": {"duration": 0},
-                            "fromcurrent": True,
-                            "mode": "immediate"
-                        }]
-                    ),
-                    dict(
-                        label="⏸ Pause",
-                        method="animate",
-                        args=[[None], {
-                            "frame": {"duration": 0, "redraw": False},
-                            "transition": {"duration": 0},
-                            "mode": "immediate"
-                        }]
-                    ),
-                ]
-            )
-        ],
-    )
-
-    # Slider LIMPO: sem labels em cada step, só "t = ... s"
     slider_steps = []
     for k in slider_frame_idxs:
         slider_steps.append(dict(
@@ -342,19 +314,84 @@ def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="p
                 "frame": {"duration": 0, "redraw": False},
                 "transition": {"duration": 0}
             }],
-            label=""  # <<< remove textos que poluíam o gráfico
+            label=""  # remove textos 0.461s, 0.492s...
         ))
 
+    # -------------------------
+    # Layout (dark) + botões bonitos
+    # -------------------------
     fig.update_layout(
+        height=860,
+        margin=dict(l=20, r=20, t=90, b=120),
+
+        paper_bgcolor=PAPER_BG,
+        plot_bgcolor=PLOT_BG,
+        font=dict(color=FONT_CLR, size=13),
+
+        legend=dict(
+            orientation="h",
+            y=1.02, x=1,
+            xanchor="right", yanchor="bottom",
+            font=dict(color=LEG_CLR)
+        ),
+
+        # Botões (Play/Pause) com fundo escuro e borda azul
+        updatemenus=[dict(
+            type="buttons",
+            direction="left",
+            x=0.0, y=1.18,
+            xanchor="left",
+            yanchor="top",
+            showactive=True,
+            active=0,
+
+            bgcolor=BTN_BG,
+            bordercolor=BTN_BRD,
+            borderwidth=1,
+            pad=dict(r=8, t=6, l=8, b=6),
+
+            font=dict(color=FONT_CLR, size=14),
+
+            buttons=[
+                dict(
+                    label="▶ Play",
+                    method="animate",
+                    args=[None, {
+                        "frame": {"duration": 0, "redraw": False},
+                        "transition": {"duration": 0},
+                        "fromcurrent": True,
+                        "mode": "immediate"
+                    }]
+                ),
+                dict(
+                    label="⏸ Pause",
+                    method="animate",
+                    args=[[None], {
+                        "frame": {"duration": 0, "redraw": False},
+                        "transition": {"duration": 0},
+                        "mode": "immediate"
+                    }]
+                ),
+            ]
+        )],
+
+        # Slider abaixo do grid + estilo dark
         sliders=[dict(
-            x=0.0, y=-0.10, len=1.0,  # <<< joga para baixo (fora do grid)
+            x=0.0, y=-0.10, len=1.0,
             pad=dict(t=10, b=0),
-            currentvalue=dict(prefix="t = ", suffix=" s", font=dict(size=14), visible=True),
+            currentvalue=dict(prefix="t = ", suffix=" s", font=dict(size=14, color=FONT_CLR), visible=True),
+            bgcolor=SL_BG,
+            bordercolor=SL_BRD,
+            borderwidth=1,
             steps=slider_steps
-        )]
+        )],
     )
 
-    # Axes
+    # Grid/zero-line para tema dark
+    fig.update_xaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
+    fig.update_yaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
+
+    # Axes titles/ranges
     fig.update_xaxes(title_text="Tempo (s)", row=1, col=1)
     fig.update_yaxes(title_text="Amplitude", row=1, col=1)
 
@@ -376,11 +413,11 @@ def build_animated_figure(t, a, b, c, alpha, beta, frame_step=5, clarke_label="p
 # UI: HEADER
 # =========================================================
 st.markdown("## ⚡ IEEE 34 Barras — Visualização Interativa")
-st.caption("Upload múltiplo • Seleção do arquivo • Animação fluida • Slider limpo • Clarke • FFT/THD opcional")
+st.caption("Upload múltiplo • Seleção do arquivo • Animação fluida • Botões/slider dark • Clarke • FFT/THD opcional")
 
 
 # =========================================================
-# SIDEBAR: UI MELHORADA + MULTI-ARQUIVO
+# SIDEBAR: UI + MULTI-ARQUIVO
 # =========================================================
 with st.sidebar:
     st.markdown("## ⚙️ Controles")
@@ -530,6 +567,7 @@ if show_fft:
         st.markdown("## 📊 FFT e THD")
 
         c1, c2 = st.columns([1, 1])
+
         with c1:
             st.subheader("THD (%) por fase")
             st.table({
@@ -552,8 +590,11 @@ if show_fft:
                 yaxis_title="Amplitude (RMS)",
                 height=380,
                 margin=dict(l=25, r=15, t=60, b=35),
+                paper_bgcolor=PAPER_BG,
+                plot_bgcolor=PLOT_BG,
+                font=dict(color=FONT_CLR),
                 legend=dict(orientation="h", y=1.02, x=1, xanchor="right", yanchor="bottom"),
             )
-            fig_fft.update_xaxes(range=[0, float(fft_xmax)], showgrid=True, gridcolor="rgba(200,200,200,0.12)")
-            fig_fft.update_yaxes(showgrid=True, gridcolor="rgba(200,200,200,0.12)")
+            fig_fft.update_xaxes(range=[0, float(fft_xmax)], showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
+            fig_fft.update_yaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
             st.plotly_chart(fig_fft, use_container_width=True)
