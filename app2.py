@@ -1,871 +1,487 @@
 import io
+import os
 import numpy as np
+import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
 from scipy.io import loadmat
 from scipy.signal import windows
-from scipy.fft import fft, fftfreq
-
+from sklearn.tree import DecisionTreeClassifier
 
 # =========================================================
-# CONFIG
+# CONFIGURAÇÃO DA PÁGINA
 # =========================================================
 st.set_page_config(
-    page_title="IEEE34 – V7 (Campos + Rastros + Sequências V0/V1/V2 + Legendas)",
-    layout="wide"
+    page_title="PhD T2F Protection & Analysis",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+# Constantes Visuais
 ANGLES = np.deg2rad([0, 120, 240])  # A,B,C
-
-# Tema dark
 PAPER_BG = "#0f1117"
 PLOT_BG  = "#0f1117"
 GRID_CLR = "rgba(255,255,255,0.08)"
-ZERO_CLR = "rgba(255,255,255,0.10)"
 FONT_CLR = "#e6edf3"
-LEG_CLR  = "#c9d1d9"
-
-# Botões plotly
-BTN_BG   = "rgba(22,27,34,0.95)"
-BTN_BRD  = "rgba(88,166,255,0.55)"
-
-# Slider plotly
-SL_BG    = "rgba(22,27,34,0.75)"
-SL_BRD   = "rgba(240,246,252,0.25)"
-
-# Cores principais
-CLR_A = "#FF5555"
-CLR_B = "#55FF55"
-CLR_C = "#5555FF"
-CLR_RES = "rgba(240,246,252,0.95)"
-
-CLR_V1 = "rgba(88,166,255,0.95)"      # azul
-CLR_V2 = "rgba(170,170,170,0.95)"     # cinza
-CLR_V0 = "rgba(255,215,0,0.95)"       # amarelo
-
-CLR_TRAJ_ABC = "rgba(240,246,252,0.35)"
-CLR_TRAJ_V1  = "rgba(88,166,255,0.35)"
-CLR_TRAJ_V2  = "rgba(170,170,170,0.35)"
-CLR_TRAJ_V0  = "rgba(255,215,0,0.35)"
-
+DATASET_FILE = "dataset_faltas_t2f.csv" # Arquivo onde o aprendizado será salvo
 
 # =========================================================
-# CORE MATH: Clarke, FFT, THD
+# 1. FUNÇÕES DE SUPORTE (DATA LOADING)
 # =========================================================
+@st.cache_data(show_spinner=False)
+def load_mat_file(file_bytes):
+    try:
+        return loadmat(io.BytesIO(file_bytes), squeeze_me=False, struct_as_record=False)
+    except Exception as e:
+        return str(e)
+
+def extract_keys_safely(mat_data):
+    if 'ts' not in mat_data: return []
+    ts_struct = mat_data['ts']
+    if isinstance(ts_struct, np.ndarray) and ts_struct.size == 1: 
+        ts_struct = ts_struct.item()
+    
+    raw_keys = []
+    if hasattr(ts_struct, '_fieldnames'): raw_keys = ts_struct._fieldnames
+    elif hasattr(ts_struct, 'dtype') and getattr(ts_struct.dtype, 'names', None): raw_keys = ts_struct.dtype.names
+    elif isinstance(ts_struct, dict): raw_keys = ts_struct.keys()
+    else: raw_keys = [k for k in dir(ts_struct) if not k.startswith('_')]
+        
+    return sorted([str(k).replace("ts_", "") for k in raw_keys])
+
+def extract_signal(mat, point_name):
+    if 'ts' not in mat: return None, None
+    ts_root = mat['ts']
+    if isinstance(ts_root, np.ndarray): 
+        if ts_root.size == 1: ts_root = ts_root.item()
+        else: ts_root = ts_root[0]
+    
+    key = f"ts_{point_name}"
+    # Tenta acesso via dict ou atributo
+    entry = ts_root.get(key) if isinstance(ts_root, dict) else getattr(ts_root, key, None)
+    
+    if entry is None: return None, None
+    if isinstance(entry, np.ndarray) and entry.size == 1: entry = entry.item()
+    
+    t = getattr(entry, "Time", getattr(entry, "time", None))
+    x = getattr(entry, "Data", getattr(entry, "data", None))
+    
+    if t is None or x is None: return None, None
+
+    t = np.asarray(t).squeeze()
+    x = np.asarray(x).squeeze()
+    
+    # Garante formato (N, 3)
+    if x.ndim == 2:
+        if x.shape[0] == 3 and x.shape[1] > 3: x = x.T
+        
+    return t, x
+
+# =========================================================
+# 2. INTEGRAÇÃO MACHINE LEARNING (TREINAMENTO T2F)
+# =========================================================
+
+def train_model():
+    """Treina uma Árvore de Decisão se houver dados suficientes."""
+    if not os.path.exists(DATASET_FILE):
+        return None
+    
+    try:
+        df = pd.read_csv(DATASET_FILE)
+        # Precisamos de pelo menos 3 classes diferentes ou 5 exemplos para começar a arriscar
+        if len(df) < 3: 
+            return None
+            
+        # Features usadas para decisão
+        X = df[['r0', 'r2', 'v1_mag', 'i1_mag']]
+        y = df['label']
+        
+        clf = DecisionTreeClassifier(max_depth=6, random_state=42)
+        clf.fit(X, y)
+        return clf
+    except:
+        return None
+
+def classify_fault_hybrid(V0, V1, V2, I0, I1, I2, thresh_0, thresh_2):
+    """Classifica usando ML (se disponível) ou Heurística (Sliders)."""
+    i1_mag = abs(I1)
+    denom = i1_mag if i1_mag > 1e-3 else 1e-3
+    
+    r0 = abs(I0) / denom # Razão Zero/Positiva
+    r2 = abs(I2) / denom # Razão Negativa/Positiva
+    
+    # Dados para o modelo
+    features = {
+        'r0': float(r0),
+        'r2': float(r2),
+        'v1_mag': float(abs(V1)),
+        'i1_mag': float(i1_mag)
+    }
+
+    model = train_model()
+    
+    if model:
+        # --- MODO MACHINE LEARNING ---
+        # O modelo decide com base no que você ensinou
+        pred = model.predict(pd.DataFrame([features]))[0]
+        return pred, "#2196F3", f"🤖 IA T2F (Treinada com {len(pd.read_csv(DATASET_FILE))} casos)", features
+    else:
+        # --- MODO MANUAL (HEURÍSTICA) ---
+        # Usa os sliders da sidebar
+        if i1_mag < 0.1: return "Sem Carga / Desligado", "gray", "Manual", features
+        
+        is_zero = r0 > thresh_0
+        is_neg  = r2 > thresh_2
+
+        if not is_zero and not is_neg:
+            return "Normal / Carga Equilibrada", "#4CAF50", "Manual", features
+        
+        # Lógica genérica que será substituída pelo seu treino
+        if not is_zero and is_neg:
+            return "Bifásico Aéreo (AB) - Provável", "#FF9800", "Manual", features
+        
+        if is_zero and is_neg:
+            # Tenta distinguir terra vs bifásico terra
+            if 0.8 < (r0/r2) < 1.2:
+                return "Bifásico Terra (AC ou BC) - Provável", "#E91E63", "Manual", features
+            else:
+                return "Falta Complexa (Treine o modelo!)", "#9C27B0", "Manual", features
+                
+        if is_zero and not is_neg:
+            return "Falta Envolvendo Terra (I0 puro)", "#673AB7", "Manual", features
+
+        return "Indeterminado", "gray", "Manual", features
+
+def save_training_point(features, true_label):
+    """Salva a correção no CSV."""
+    data = features.copy()
+    data['label'] = true_label
+    df_new = pd.DataFrame([data])
+    
+    if os.path.exists(DATASET_FILE):
+        df_new.to_csv(DATASET_FILE, mode='a', header=False, index=False)
+    else:
+        df_new.to_csv(DATASET_FILE, index=False)
+
+# =========================================================
+# 3. CÁLCULOS MATEMÁTICOS (CACHEADOS)
+# =========================================================
+
 def clarke_transform(a, b, c, mode="power"):
     k = (2/3) if mode == "amp" else np.sqrt(2/3)
     alpha = k * (a - 0.5*b - 0.5*c)
     beta  = k * ((np.sqrt(3)/2)*b - (np.sqrt(3)/2)*c)
     return alpha, beta
 
-
-def compute_fft_rms(signal, fs, window="hann", remove_mean=True):
-    signal = np.asarray(signal).squeeze()
-    N = len(signal)
-    if N < 4 or fs <= 0:
-        return np.array([]), np.array([])
-
-    x = signal.copy()
-    if remove_mean:
-        x = x - np.mean(x)
-
-    w = windows.hann(N) if window == "hann" else np.ones(N)
-    X = fft(x * w)
-    freqs = fftfreq(N, d=1/fs)
-
-    pos = freqs >= 0
-    freqs = freqs[pos]
-    X = X[pos]
-
-    X_mag = (2.0 / np.sum(w)) * np.abs(X)
-    X_rms = X_mag / np.sqrt(2)
-    return freqs, X_rms
-
-
-def compute_thd_percent(freqs, spectrum_rms, f_fund=60.0, h_max=25, tol_hz=1.0):
-    if len(freqs) == 0:
-        return np.nan
-
-    freqs = np.asarray(freqs)
-    spec = np.asarray(spectrum_rms)
-
-    idx = np.where(np.abs(freqs - f_fund) <= tol_hz)[0]
-    if len(idx) == 0:
-        return np.nan
-    X1 = spec[idx[0]]
-    if X1 <= 1e-12:
-        return np.nan
-
-    harm_sq = 0.0
-    for h in range(2, int(h_max) + 1):
-        fh = h * f_fund
-        ih = np.where(np.abs(freqs - fh) <= tol_hz)[0]
-        if len(ih) > 0:
-            harm_sq += spec[ih[0]]**2
-
-    return float(np.sqrt(harm_sq) / X1 * 100.0)
-
-
-# =========================================================
-# SEQUÊNCIAS SIMÉTRICAS (Fortescue)
-# =========================================================
-def phasor_at_f0(x, t, f0=60.0, window="hann", remove_mean=True):
-    """
-    Estima fasor complexo RMS na frequência f0 via projeção (DFT na freq alvo).
-    """
-    x = np.asarray(x).squeeze()
-    t = np.asarray(t).squeeze()
-    if len(x) != len(t) or len(x) < 8:
-        return 0.0 + 0.0j
-
-    if remove_mean:
-        x = x - np.mean(x)
-
+def phasor_from_signal(x, t, f0=60.0):
+    x = x - np.mean(x)
     N = len(x)
-    w = windows.hann(N) if window == "hann" else np.ones(N)
-    xw = x * w
-
+    if N < 4: return 0j
+    window = windows.hann(N)
+    xw = x * window
+    # Projeção DFT na fundamental
     exp_term = np.exp(-1j * 2*np.pi*f0*t)
     X = np.sum(xw * exp_term)
-    W = np.sum(w)
+    W = np.sum(window)
+    return (2.0 * X / W) / np.sqrt(2) if W != 0 else 0j
 
-    A_peak = 2.0 * X / W
-    Vrms = A_peak / np.sqrt(2)
-    return Vrms
-
-
-def symmetrical_components(Va, Vb, Vc):
+def sym_comp_phasors(Va, Vb, Vc):
     a = np.exp(1j * 2*np.pi/3)
-    T = (1/3) * np.array([
-        [1,   1,   1],
-        [1, a**2,  a],
-        [1,   a, a**2]
-    ], dtype=complex)
-    V0, V1, V2 = T @ np.array([Va, Vb, Vc], dtype=complex)
-    return V0, V1, V2
+    T = (1/3) * np.array([[1, 1, 1], [1, a**2, a], [1, a, a**2]], dtype=complex)
+    return T @ np.array([Va, Vb, Vc])
 
+def calculate_impedance(Va, Vb, Vc, Ia, Ib, Ic):
+    mask = np.abs(Ia) > 1e-2
+    Za = np.zeros_like(Va, dtype=complex); Za[mask] = Va[mask] / Ia[mask]
+    mask = np.abs(Ib) > 1e-2
+    Zb = np.zeros_like(Vb, dtype=complex); Zb[mask] = Vb[mask] / Ib[mask]
+    mask = np.abs(Ic) > 1e-2
+    Zc = np.zeros_like(Vc, dtype=complex); Zc[mask] = Vc[mask] / Ic[mask]
+    return Za, Zb, Zc
 
-def inv_symmetrical_components(V0, V1, V2):
-    a = np.exp(1j * 2*np.pi/3)
-    Ti = np.array([
-        [1,   1,   1],
-        [1,   a, a**2],
-        [1, a**2,  a]
-    ], dtype=complex)
-    Va, Vb, Vc = Ti @ np.array([V0, V1, V2], dtype=complex)
-    return Va, Vb, Vc
-
-
-def synth_from_phasor(Vrms, t, f0):
+def synth_sequence(Vrms, t, f0):
+    # Reconstrói onda no tempo baseada no fasor
     return np.sqrt(2) * np.real(Vrms * np.exp(1j * 2*np.pi*f0*t))
 
+@st.cache_data(show_spinner=False)
+def process_full_analysis(t, va, vb, vc, ia, ib, ic, f0, clarke_mode, t0, t2):
+    # 1. Clarke (V e I)
+    alpha_v, beta_v = clarke_transform(va, vb, vc, mode=clarke_mode)
+    alpha_i, beta_i = clarke_transform(ia, ib, ic, mode=clarke_mode)
+    
+    # 2. Fasores e Sequências (Fundamental)
+    Va_ph = phasor_from_signal(va, t, f0); Vb_ph = phasor_from_signal(vb, t, f0); Vc_ph = phasor_from_signal(vc, t, f0)
+    Ia_ph = phasor_from_signal(ia, t, f0); Ib_ph = phasor_from_signal(ib, t, f0); Ic_ph = phasor_from_signal(ic, t, f0)
+    
+    V0, V1, V2 = sym_comp_phasors(Va_ph, Vb_ph, Vc_ph)
+    I0, I1, I2 = sym_comp_phasors(Ia_ph, Ib_ph, Ic_ph)
+    
+    # 3. Classificação Híbrida (ML ou Manual)
+    desc, color, method, features = classify_fault_hybrid(V0, V1, V2, I0, I1, I2, t0, t2)
+    
+    # 4. Impedância
+    Za, Zb, Zc = calculate_impedance(va, vb, vc, ia, ib, ic)
+    
+    # 5. Reconstrução Temporal das Sequências (para animação V e I)
+    a_op = np.exp(1j * 2*np.pi/3)
+    Ti = np.array([[1, 1, 1], [1, a_op, a_op**2], [1, a_op**2, a_op]], dtype=complex)
+    
+    def get_seq_curves(Comp0, Comp1, Comp2):
+        # Gera curvas para cada componente isolada (apenas para visualização)
+        v_a0, _, _ = Ti @ np.array([Comp0, 0, 0])
+        v_a1, _, _ = Ti @ np.array([0, Comp1, 0])
+        v_a2, _, _ = Ti @ np.array([0, 0, Comp2])
+        return {
+            "s0": synth_sequence(v_a0, t, f0),
+            "s1": synth_sequence(v_a1, t, f0),
+            "s2": synth_sequence(v_a2, t, f0)
+        }
+
+    return {
+        "alpha_v": alpha_v, "beta_v": beta_v, "alpha_i": alpha_i, "beta_i": beta_i,
+        "V_phasors": (V0, V1, V2), "I_phasors": (I0, I1, I2),
+        "fault_info": (desc, color, method),
+        "features": features,
+        "Z_traj": (Za, Zb, Zc),
+        "seq_curves_v": get_seq_curves(V0, V1, V2),
+        "seq_curves_i": get_seq_curves(I0, I1, I2)
+    }
 
 # =========================================================
-# MATLAB EXTRACTION (robust-ish)
+# 4. INTERFACE DE USUÁRIO (UI)
 # =========================================================
-def _mat_getfield(obj, name):
-    if hasattr(obj, name):
-        return getattr(obj, name)
-    try:
-        if hasattr(obj, "dtype") and obj.dtype.names and name in obj.dtype.names:
-            return obj[name]
-    except Exception:
-        pass
-    return None
+st.markdown("## ⚡ Análise de Faltas T2F - PhD Tool")
 
+with st.sidebar:
+    st.header("1. Arquivos")
+    uploaded_files = st.file_uploader("Arraste arquivos .mat", type=["mat"], accept_multiple_files=True)
+    
+    if not uploaded_files:
+        st.info("Aguardando arquivos...")
+        st.stop()
 
-def extract_ts_from_mat(mat, point_name):
-    """
-    Espera:
-      mat['ts'] -> struct
-      ts.ts_<POINT>.Time / .Data
-    """
-    if 'ts' not in mat:
-        return None, None
+    loaded_mats = {}
+    for uf in uploaded_files:
+        data = load_mat_file(uf.getvalue())
+        if not isinstance(data, str): loaded_mats[uf.name] = data
+    
+    if not loaded_mats: st.error("Nenhum arquivo válido."); st.stop()
+    
+    selected_filename = st.selectbox("Arquivo Ativo", sorted(loaded_mats.keys()))
+    mat_data = loaded_mats[selected_filename]
+    all_keys = extract_keys_safely(mat_data)
+    
+    st.divider()
+    st.header("2. Sinais")
+    v_keys = [k for k in all_keys if k.startswith('V')]; i_keys = [k for k in all_keys if k.startswith('I')]
+    v_point = st.selectbox("Canal Tensão (V)", v_keys if v_keys else all_keys, index=0)
+    i_point = st.selectbox("Canal Corrente (I)", i_keys if i_keys else all_keys, index=0)
+    
+    st.divider()
+    st.header("3. Ajustes")
+    remove_mean = st.checkbox("Remover DC", value=True)
+    frame_step = st.slider("Velocidade Animação", 1, 60, 10)
+    
+    # Sliders só aparecem se não tiver modelo treinado (ou para debug)
+    with st.expander("Calibração Manual (Se não houver ML)"):
+        thresh_0 = st.slider("Limiar Seq Zero (I0/I1)", 0.01, 1.0, 0.15, 0.01)
+        thresh_2 = st.slider("Limiar Seq Neg (I2/I1)", 0.01, 1.0, 0.15, 0.01)
 
-    ts_root = mat['ts']
-    if isinstance(ts_root, np.ndarray):
-        ts_root = ts_root.squeeze()
-        if isinstance(ts_root, np.ndarray) and ts_root.dtype == object:
-            ts_root = ts_root.item()
+# --- PROCESSAMENTO PRINCIPAL ---
+t_v, v_raw = extract_signal(mat_data, v_point)
+t_i, i_raw = extract_signal(mat_data, i_point)
 
-    key = f"ts_{point_name}"
-    entry = _mat_getfield(ts_root, key)
-    if entry is None:
-        return None, None
+if t_v is None or t_i is None: st.error("Erro nos dados."); st.stop()
 
-    if isinstance(entry, np.ndarray):
-        entry = entry.squeeze()
-        if isinstance(entry, np.ndarray) and entry.dtype == object:
-            entry = entry.item()
+n_min = min(len(t_v), len(t_i))
+t = t_v[:n_min]; va, vb, vc = v_raw[:n_min].T; ia, ib, ic = i_raw[:n_min].T
 
-    time_ = _mat_getfield(entry, "Time")
-    data_ = _mat_getfield(entry, "Data")
-    if time_ is None or data_ is None:
-        return None, None
+if remove_mean:
+    va -= np.mean(va); vb -= np.mean(vb); vc -= np.mean(vc)
+    ia -= np.mean(ia); ib -= np.mean(ib); ic -= np.mean(ic)
 
-    t = np.asarray(time_).squeeze()
-    x = np.asarray(data_).squeeze()
-
-    # se vier (3,N), vira (N,3)
-    if x.ndim == 2 and x.shape[0] == 3 and x.shape[1] == t.shape[0]:
-        x = x.T
-
-    return t, x
-
-
-def extract_m1_location(mat):
-    if 'm1_location' not in mat:
-        return None
-    try:
-        return float(np.asarray(mat['m1_location']).squeeze())
-    except Exception:
-        return None
-
+# Roda análise completa
+data = process_full_analysis(t, va, vb, vc, ia, ib, ic, 60.0, "power", thresh_0, thresh_2)
 
 # =========================================================
-# Campo ABC: resultante XY por amostra
+# ÁREA DE DIAGNÓSTICO E TREINAMENTO
 # =========================================================
-def resultant_xy_series(a, b, c):
-    xa = a * np.cos(ANGLES[0]); ya = a * np.sin(ANGLES[0])
-    xb = b * np.cos(ANGLES[1]); yb = b * np.sin(ANGLES[1])
-    xc = c * np.cos(ANGLES[2]); yc = c * np.sin(ANGLES[2])
-    rx = xa + xb + xc
-    ry = ya + yb + yc
-    return rx, ry
+features = data["features"]
+desc, color, method = data["fault_info"]
 
+c1, c2, c3, c4 = st.columns([2, 1, 1, 2])
 
-def abc_vectors_xy(a_val, b_val, c_val):
-    vals = np.array([a_val, b_val, c_val], dtype=float)
-    xs = vals * np.cos(ANGLES)
-    ys = vals * np.sin(ANGLES)
-    vecs = list(zip(xs, ys))
-    rx = sum(v[0] for v in vecs)
-    ry = sum(v[1] for v in vecs)
-    return vecs, (rx, ry)
+with c1:
+    st.markdown(f"""
+    <div style="padding:15px; border-radius:8px; background:{color}22; border-left: 5px solid {color}">
+        <h3 style="margin:0; color:{color}">{desc}</h3>
+        <small>Método: <b>{method}</b> | Arquivo: {selected_filename}</small>
+    </div>
+    """, unsafe_allow_html=True)
 
+with c2:
+    st.metric("Razão I2/I1 (Neg)", f"{features['r2']:.3f}")
+with c3:
+    st.metric("Razão I0/I1 (Zero)", f"{features['r0']:.3f}")
 
-# =========================================================
-# Legendas abaixo de cada subplot (sem xref="x1 domain")
-# =========================================================
-def add_subplot_caption(fig, row, col, text, y_offset=0.055):
-    """
-    Coloca uma legenda abaixo do subplot (row,col) usando coordenadas 'paper'
-    para evitar erros de xref/yref.
-    """
-    xaxis_name = "xaxis" if (row, col) == (1, 1) else None
-
-    # Descobrir qual índice do eixo x/y daquele subplot
-    # make_subplots cria xaxis, xaxis2, xaxis3... em ordem de criação
-    # A maneira robusta: usar fig.get_subplot(row,col) -> retorna (xaxis, yaxis) objects
-    sp = fig.get_subplot(row, col)
-    # sp é um tuple (xaxis, yaxis) — cada um tem .domain
-    xdom = sp.xaxis.domain
-    ydom = sp.yaxis.domain
-
-    xmid = 0.5 * (xdom[0] + xdom[1])
-    y = max(0.0, ydom[0] - y_offset)
-
-    fig.add_annotation(
-        x=xmid, y=y,
-        xref="paper", yref="paper",
-        text=f"<span style='color:{LEG_CLR};font-size:12px'>{text}</span>",
-        showarrow=False,
-        align="center",
-    )
-
+with c4:
+    st.markdown("#### 🎯 Ensinar o Sistema (T2F)")
+    # TIPOS DE FALTA DA SUA TESE
+    tipos_t2f = [
+        "Normal / Carga Equilibrada",
+        "Trifásico ABC - Caso 1 (Solo)",
+        "Trifásico ABC - Caso 2 (Aéreo)",
+        "Bifásico Aéreo (AB)",
+        "Bifásico Terra (AC)",
+        "Bifásico Terra (BC)"
+    ]
+    correct_label = st.selectbox("Classificação Real:", types_t2f := tipos_t2f, label_visibility="collapsed")
+    
+    if st.button("💾 Salvar Treinamento"):
+        save_training_point(features, correct_label)
+        st.success("Aprendido! O sistema agora reconhecerá este padrão.")
+        st.cache_data.clear() # Limpa cache para o modelo atualizar
 
 # =========================================================
-# FIGURA ANIMADA (4x2) + Play/Pause estável
+# ABAS VISUAIS
 # =========================================================
-def build_animated_figure(
-    t, a, b, c,
-    alpha, beta,
-    seq_data,
-    V0, V1, V2,
-    show_seq=True,
-    frame_step=6,
-    traj_stride=3,
-    clarke_label="power",
-    play_ms=60
-):
-    N = len(t)
+tab1, tab2 = st.tabs(["📺 Animação V & I (Tempo Real)", "🛡️ Proteção (Impedância & Fasores)"])
 
-    # Frames reduzidos
-    frame_idxs = list(range(0, N, int(frame_step)))
-    if frame_idxs[-1] != N - 1:
-        frame_idxs.append(N - 1)
-    frame_names = [str(k) for k in frame_idxs]
-
-    # Slider com poucos steps
-    max_slider_steps = 60
-    if len(frame_idxs) > max_slider_steps:
-        slider_idxs = np.linspace(0, len(frame_idxs) - 1, max_slider_steps).astype(int)
-        slider_frame_idxs = [frame_idxs[i] for i in slider_idxs]
-    else:
-        slider_frame_idxs = frame_idxs
-
-    # Limites
-    vmax = float(np.max(np.abs(np.vstack([a, b, c]))))
-    axis_lim = max(1.0, 2.8 * vmax)
-
-    # Séries resultantes (rastros)
-    rxt, ryt = resultant_xy_series(a, b, c)
-    rx1, ry1 = resultant_xy_series(seq_data["a1"], seq_data["b1"], seq_data["c1"])
-    rx2, ry2 = resultant_xy_series(seq_data["a2"], seq_data["b2"], seq_data["c2"])
-    rx0, ry0 = resultant_xy_series(seq_data["a0"], seq_data["b0"], seq_data["c0"])
-
-    # Limite comum p/ campos de sequência
-    seq_lim = max(1.0, 1.2 * float(np.max(np.abs(np.vstack([rx1, ry1, rx2, ry2, rx0, ry0])))))
-
-    # Limite αβ
-    ab_lim = max(1.0, 1.1 * float(np.max(np.sqrt(alpha**2 + beta**2))))
-
+with tab1:
+    # Preparação dos dados para plotagem
+    alpha_v, beta_v = data["alpha_v"], data["beta_v"]
+    seqs_v = data["seq_curves_v"]
+    alpha_i, beta_i = data["alpha_i"], data["beta_i"]
+    seqs_i = data["seq_curves_i"]
+    
+    indices = list(range(0, len(t), frame_step))
+    if indices[-1] != len(t)-1: indices.append(len(t)-1)
+    
+    # Layout 3x2 (V esquerda, I direita)
     fig = make_subplots(
-        rows=4, cols=2,
-        subplot_titles=(
-            "ABC (tempo)",
-            "Campo ABC (XY)",
-            f"Clarke αβ (tempo) – {clarke_label}",
-            "Plano αβ",
-            "Campo V1 (sequência positiva)",
-            "Campo V2 (sequência negativa)",
-            "Campo V0 (sequência zero)",
-            "|V0|, |V1|, |V2| (RMS)"
-        ),
-        horizontal_spacing=0.10,
-        vertical_spacing=0.10,
+        rows=3, cols=2, 
+        subplot_titles=("Tensão ABC", "Corrente ABC", "Tensão Sequências", "Corrente Sequências", "Vetor Espacial V", "Vetor Espacial I"),
+        vertical_spacing=0.08, horizontal_spacing=0.05
     )
+    
+    # Cores Consistentes
+    c_a, c_b, c_c = "#FF5252", "#4CAF50", "#448AFF"
+    c_s1, c_s2, c_s0 = "cyan", "orange", "yellow"
 
-    # ----------------- TRACES BASE (estáticos) -----------------
-    # ABC tempo
-    fig.add_trace(go.Scatter(x=t, y=a, mode="lines", name="A", line=dict(width=2, color=CLR_A)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=b, mode="lines", name="B", line=dict(width=2, color=CLR_B)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=c, mode="lines", name="C", line=dict(width=2, color=CLR_C)), row=1, col=1)
+    # --- TRACES DE FUNDO (ESTÁTICOS) ---
+    # Tensão
+    fig.add_trace(go.Scatter(x=t, y=va, line=dict(color=c_a, width=1), name="Va"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=vb, line=dict(color=c_b, width=1), name="Vb"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=vc, line=dict(color=c_c, width=1), name="Vc"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=seqs_v['s1'], line=dict(color=c_s1, width=1), name="V1"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=seqs_v['s2'], line=dict(color=c_s2, width=1, dash='dash'), name="V2"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=seqs_v['s0'], line=dict(color=c_s0, width=1, dash='dot'), name="V0"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=alpha_v, y=beta_v, line=dict(color="rgba(255,255,255,0.2)", width=1), showlegend=False), row=3, col=1)
 
-    # Clarke tempo
-    fig.add_trace(go.Scatter(x=t, y=alpha, mode="lines", name="α", line=dict(width=2)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=beta,  mode="lines", name="β", line=dict(width=2)), row=2, col=1)
+    # Corrente
+    fig.add_trace(go.Scatter(x=t, y=ia, line=dict(color=c_a, width=1), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=ib, line=dict(color=c_b, width=1), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=ic, line=dict(color=c_c, width=1), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=seqs_i['s1'], line=dict(color=c_s1, width=1), showlegend=False), row=2, col=2)
+    fig.add_trace(go.Scatter(x=t, y=seqs_i['s2'], line=dict(color=c_s2, width=1, dash='dash'), showlegend=False), row=2, col=2)
+    fig.add_trace(go.Scatter(x=t, y=seqs_i['s0'], line=dict(color=c_s0, width=1, dash='dot'), showlegend=False), row=2, col=2)
+    fig.add_trace(go.Scatter(x=alpha_i, y=beta_i, line=dict(color="rgba(255,255,255,0.2)", width=1), showlegend=False), row=3, col=2)
 
-    # Plano αβ (traj completa)
-    fig.add_trace(go.Scatter(x=alpha, y=beta, mode="lines", name="traj αβ", line=dict(width=2)), row=2, col=2)
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=7)), row=2, col=2)
+    # --- TRACES DINÂMICOS (BOLINHAS E VETORES) ---
+    # Indices: 14 traces estáticos acima (0 a 13). Dinâmicos começam no 14.
+    # Adicionamos placeholders no frame 0
+    # V: 3 dots ABC, 3 dots Seq, 1 vec AlphaBeta = 7 traces
+    # I: 3 dots ABC, 3 dots Seq, 1 vec AlphaBeta = 7 traces
+    
+    # V Init
+    fig.add_trace(go.Scatter(x=[t[0]], y=[va[0]], mode="markers", marker=dict(color="white", size=6), showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[vb[0]], mode="markers", marker=dict(color="white", size=6), showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[vc[0]], mode="markers", marker=dict(color="white", size=6), showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[seqs_v['s1'][0]], mode="markers", marker=dict(color=c_s1, size=5), showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[seqs_v['s2'][0]], mode="markers", marker=dict(color=c_s2, size=5), showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[seqs_v['s0'][0]], mode="markers", marker=dict(color=c_s0, size=5), showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[0, alpha_v[0]], y=[0, beta_v[0]], mode="lines+markers", line=dict(color="white", width=3), showlegend=False), row=3, col=1)
 
-    # Origens seq
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=7)), row=3, col=1)
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=7)), row=3, col=2)
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=7)), row=4, col=1)
+    # I Init
+    fig.add_trace(go.Scatter(x=[t[0]], y=[ia[0]], mode="markers", marker=dict(color="white", size=6), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[ib[0]], mode="markers", marker=dict(color="white", size=6), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[ic[0]], mode="markers", marker=dict(color="white", size=6), showlegend=False), row=1, col=2)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[seqs_i['s1'][0]], mode="markers", marker=dict(color=c_s1, size=5), showlegend=False), row=2, col=2)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[seqs_i['s2'][0]], mode="markers", marker=dict(color=c_s2, size=5), showlegend=False), row=2, col=2)
+    fig.add_trace(go.Scatter(x=[t[0]], y=[seqs_i['s0'][0]], mode="markers", marker=dict(color=c_s0, size=5), showlegend=False), row=2, col=2)
+    fig.add_trace(go.Scatter(x=[0, alpha_i[0]], y=[0, beta_i[0]], mode="lines+markers", line=dict(color="white", width=3), showlegend=False), row=3, col=2)
 
-    # Barra RMS (garantindo que apareça)
-    fig.add_trace(go.Bar(
-        x=["|V1|", "|V2|", "|V0|"],
-        y=[float(np.abs(V1)), float(np.abs(V2)), float(np.abs(V0))],
-        name="RMS",
-        marker=dict(color=[CLR_V1, CLR_V2, CLR_V0])
-    ), row=4, col=2)
-
-    # ----------------- TRACES DINÂMICOS (inicial) -----------------
-    i0 = frame_idxs[0]
-
-    # Marcadores ABC @t
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[a[i0]], mode="markers", name="A@t", marker=dict(size=9, color=CLR_A)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[b[i0]], mode="markers", name="B@t", marker=dict(size=9, color=CLR_B)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[c[i0]], mode="markers", name="C@t", marker=dict(size=9, color=CLR_C)), row=1, col=1)
-
-    # Campo ABC vetores + resultante + rastro
-    vecs0, _ = abc_vectors_xy(a[i0], b[i0], c[i0])
-    colors = [CLR_A, CLR_B, CLR_C]
-    names = ["A", "B", "C"]
-
-    for (vx, vy), colr, nm in zip(vecs0, colors, names):
-        fig.add_trace(go.Scatter(
-            x=[0, vx], y=[0, vy],
-            mode="lines+markers", name=nm,
-            line=dict(width=4, color=colr),
-            marker=dict(size=7, color=colr)
-        ), row=1, col=2)
-
-    fig.add_trace(go.Scatter(
-        x=[0, rxt[i0]], y=[0, ryt[i0]],
-        mode="lines+markers", name="Resultante",
-        line=dict(width=5, color=CLR_RES),
-        marker=dict(size=9, color=CLR_RES)
-    ), row=1, col=2)
-
-    fig.add_trace(go.Scatter(
-        x=rxt[:i0+1:traj_stride], y=ryt[:i0+1:traj_stride],
-        mode="lines", name="rastro ABC",
-        line=dict(width=2, color=CLR_TRAJ_ABC)
-    ), row=1, col=2)
-
-    # Marcadores Clarke @t
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[alpha[i0]], mode="markers", name="α@t", marker=dict(size=8)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[beta[i0]],  mode="markers", name="β@t", marker=dict(size=8)), row=2, col=1)
-
-    # Plano αβ ponto + vetor
-    fig.add_trace(go.Scatter(x=[alpha[i0]], y=[beta[i0]], mode="markers", name="ponto αβ", marker=dict(size=10)), row=2, col=2)
-    fig.add_trace(go.Scatter(x=[0, alpha[i0]], y=[0, beta[i0]], mode="lines", name="vetor αβ",
-                             line=dict(width=3, dash="dot", color="rgba(255,215,0,0.9)")), row=2, col=2)
-
-    # V1 vetor + rastro
-    fig.add_trace(go.Scatter(
-        x=[0, rx1[i0]], y=[0, ry1[i0]],
-        mode="lines+markers", name="V1 (vetor)",
-        line=dict(width=4, color=CLR_V1),
-        marker=dict(size=8, color=CLR_V1)
-    ), row=3, col=1)
-    fig.add_trace(go.Scatter(
-        x=rx1[:i0+1:traj_stride], y=ry1[:i0+1:traj_stride],
-        mode="lines", name="rastro V1",
-        line=dict(width=2, color=CLR_TRAJ_V1)
-    ), row=3, col=1)
-
-    # V2 vetor + rastro
-    fig.add_trace(go.Scatter(
-        x=[0, rx2[i0]], y=[0, ry2[i0]],
-        mode="lines+markers", name="V2 (vetor)",
-        line=dict(width=4, color=CLR_V2),
-        marker=dict(size=8, color=CLR_V2)
-    ), row=3, col=2)
-    fig.add_trace(go.Scatter(
-        x=rx2[:i0+1:traj_stride], y=ry2[:i0+1:traj_stride],
-        mode="lines", name="rastro V2",
-        line=dict(width=2, color=CLR_TRAJ_V2)
-    ), row=3, col=2)
-
-    # V0 vetor + rastro
-    fig.add_trace(go.Scatter(
-        x=[0, rx0[i0]], y=[0, ry0[i0]],
-        mode="lines+markers", name="V0 (vetor)",
-        line=dict(width=4, color=CLR_V0),
-        marker=dict(size=8, color=CLR_V0)
-    ), row=4, col=1)
-    fig.add_trace(go.Scatter(
-        x=rx0[:i0+1:traj_stride], y=ry0[:i0+1:traj_stride],
-        mode="lines", name="rastro V0",
-        line=dict(width=2, color=CLR_TRAJ_V0)
-    ), row=4, col=1)
-
-    # visibilidade sequências
-    # índices dos 6 traces dinâmicos de sequência (V1/V2/V0 + rastros)
-    # (eles são os últimos 6 que adicionamos aqui)
-    # Vamos setar depois via visible
-    if not show_seq:
-        for di in range(len(fig.data)-6, len(fig.data)):
-            fig.data[di].visible = "legendonly"
-
-    # Índices dinâmicos:
-    # após os 3 ABC + 2 Clarke + 2 αβ + 3 origens + 1 barra = 11 traces base
-    # os dinâmicos começam em 11
-    dynamic_trace_idxs = list(range(11, len(fig.data)))
-
-    # ----------------- FRAMES -----------------
     frames = []
-    for k in frame_idxs:
-        vecs, _ = abc_vectors_xy(a[k], b[k], c[k])
-
-        tx = rxt[:k+1:traj_stride]; ty = ryt[:k+1:traj_stride]
-        t1x = rx1[:k+1:traj_stride]; t1y = ry1[:k+1:traj_stride]
-        t2x = rx2[:k+1:traj_stride]; t2y = ry2[:k+1:traj_stride]
-        t0x = rx0[:k+1:traj_stride]; t0y = ry0[:k+1:traj_stride]
-
-        frame_data = []
-
-        # ABC markers @t
-        frame_data.append(go.Scatter(x=[t[k]], y=[a[k]]))
-        frame_data.append(go.Scatter(x=[t[k]], y=[b[k]]))
-        frame_data.append(go.Scatter(x=[t[k]], y=[c[k]]))
-
-        # Campo ABC: 3 vetores A,B,C
-        for (vx, vy) in vecs:
-            frame_data.append(go.Scatter(x=[0, vx], y=[0, vy]))
-
-        # resultante
-        frame_data.append(go.Scatter(x=[0, rxt[k]], y=[0, ryt[k]]))
-        # rastro ABC
-        frame_data.append(go.Scatter(x=tx, y=ty))
-
-        # Clarke markers @t
-        frame_data.append(go.Scatter(x=[t[k]], y=[alpha[k]]))
-        frame_data.append(go.Scatter(x=[t[k]], y=[beta[k]]))
-
-        # αβ ponto + vetor
-        frame_data.append(go.Scatter(x=[alpha[k]], y=[beta[k]]))
-        frame_data.append(go.Scatter(x=[0, alpha[k]], y=[0, beta[k]]))
-
-        # V1 vetor + rastro
-        frame_data.append(go.Scatter(x=[0, rx1[k]], y=[0, ry1[k]]))
-        frame_data.append(go.Scatter(x=t1x, y=t1y))
-
-        # V2 vetor + rastro
-        frame_data.append(go.Scatter(x=[0, rx2[k]], y=[0, ry2[k]]))
-        frame_data.append(go.Scatter(x=t2x, y=t2y))
-
-        # V0 vetor + rastro
-        frame_data.append(go.Scatter(x=[0, rx0[k]], y=[0, ry0[k]]))
-        frame_data.append(go.Scatter(x=t0x, y=t0y))
-
-        frames.append(go.Frame(data=frame_data, name=str(k), traces=dynamic_trace_idxs))
+    for k in indices:
+        frames.append(go.Frame(data=[
+            # V Updates
+            go.Scatter(x=[t[k]], y=[va[k]]), go.Scatter(x=[t[k]], y=[vb[k]]), go.Scatter(x=[t[k]], y=[vc[k]]),
+            go.Scatter(x=[t[k]], y=[seqs_v['s1'][k]]), go.Scatter(x=[t[k]], y=[seqs_v['s2'][k]]), go.Scatter(x=[t[k]], y=[seqs_v['s0'][k]]),
+            go.Scatter(x=[0, alpha_v[k]], y=[0, beta_v[k]]),
+            # I Updates
+            go.Scatter(x=[t[k]], y=[ia[k]]), go.Scatter(x=[t[k]], y=[ib[k]]), go.Scatter(x=[t[k]], y=[ic[k]]),
+            go.Scatter(x=[t[k]], y=[seqs_i['s1'][k]]), go.Scatter(x=[t[k]], y=[seqs_i['s2'][k]]), go.Scatter(x=[t[k]], y=[seqs_i['s0'][k]]),
+            go.Scatter(x=[0, alpha_i[k]], y=[0, beta_i[k]])
+        ], name=str(k), traces=list(range(14, 28)))) # Atualiza os traces 14 até 27
 
     fig.frames = frames
 
-    # ----------------- SLIDER -----------------
-    slider_steps = []
-    for k in slider_frame_idxs:
-        slider_steps.append(dict(
-            method="animate",
-            args=[[str(k)], {
-                "mode": "immediate",
-                "frame": {"duration": 0, "redraw": True},  # FIX
-                "transition": {"duration": 0}
-            }],
-            label=""
-        ))
-
-    # ----------------- LAYOUT / ESTILO -----------------
+    # Configuração de Layout
     fig.update_layout(
-        height=1280,
-        margin=dict(l=20, r=20, t=95, b=170),
-        paper_bgcolor=PAPER_BG,
-        plot_bgcolor=PLOT_BG,
-        font=dict(color=FONT_CLR, size=13),
-
-        legend=dict(
-            orientation="h",
-            y=1.02, x=1,
-            xanchor="right", yanchor="bottom",
-            font=dict(color=LEG_CLR)
-        ),
-
-        updatemenus=[dict(
-            type="buttons",
-            direction="left",
-            x=0.0, y=1.13,
-            xanchor="left",
-            yanchor="top",
-            showactive=True,
-            active=0,
-            bgcolor=BTN_BG,
-            bordercolor=BTN_BRD,
-            borderwidth=1,
-            pad=dict(r=10, t=7, l=10, b=7),
-            font=dict(color=FONT_CLR, size=14),
-            buttons=[
-                dict(
-                    label="▶ Play",
-                    method="animate",
-                    args=[frame_names, {
-                        "frame": {"duration": int(play_ms), "redraw": True},  # FIX
-                        "transition": {"duration": 0},
-                        "fromcurrent": True,
-                        "mode": "immediate"
-                    }]
-                ),
-                dict(
-                    label="⏸ Pause",
-                    method="animate",
-                    args=[[None], {
-                        "frame": {"duration": 0, "redraw": False},
-                        "transition": {"duration": 0},
-                        "mode": "immediate"
-                    }]
-                ),
-            ]
-        )],
-
-        sliders=[dict(
-            x=0.0, y=-0.10, len=1.0,
-            pad=dict(t=10, b=0),
-            currentvalue=dict(prefix="t = ", suffix=" s", font=dict(size=14, color=FONT_CLR), visible=True),
-            bgcolor=SL_BG,
-            bordercolor=SL_BRD,
-            borderwidth=1,
-            steps=slider_steps
-        )],
+        height=1100, # AUMENTADO PARA TENSÃO FICAR VISÍVEL
+        paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG, font=dict(color=FONT_CLR),
+        legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center"),
+        updatemenus=[dict(type="buttons", showactive=False, x=0.05, y=1.03, bgcolor="#1f2937", font=dict(color="white"),
+            buttons=[dict(label="▶ Play", method="animate", args=[None, {"frame": {"duration": 10}, "fromcurrent": True}]),
+                     dict(label="⏸ Pause", method="animate", args=[[None], {"mode": "immediate"}])])],
+        sliders=[dict(steps=[dict(method="animate", args=[[str(k)], {"mode":"immediate"}], label=f"{t[k]:.2f}") for k in indices[::max(1, len(indices)//50)]], 
+                      currentvalue=dict(visible=True, prefix="Tempo: "), len=0.9, x=0.05, y=-0.02)]
     )
+    
+    # Fixar Eixos para não pular
+    max_v = max(abs(va).max(), abs(vb).max(), abs(vc).max()) * 1.2
+    max_i = max(abs(ia).max(), abs(ib).max(), abs(ic).max()) * 1.2
+    
+    # Eixos Tensão (Col 1)
+    for r in [1, 2]: fig.update_yaxes(range=[-max_v, max_v], row=r, col=1)
+    fig.update_xaxes(range=[-max_v, max_v], row=3, col=1); fig.update_yaxes(range=[-max_v, max_v], row=3, col=1, scaleanchor="x5", scaleratio=1)
+    
+    # Eixos Corrente (Col 2)
+    for r in [1, 2]: fig.update_yaxes(range=[-max_i, max_i], row=r, col=2)
+    fig.update_xaxes(range=[-max_i, max_i], row=3, col=2); fig.update_yaxes(range=[-max_i, max_i], row=3, col=2, scaleanchor="x6", scaleratio=1)
 
-    fig.update_xaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
-    fig.update_yaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Eixos: ABC tempo
-    fig.update_xaxes(title_text="Tempo (s)", row=1, col=1)
-    fig.update_yaxes(title_text="Amplitude", row=1, col=1)
-
-    # Campo ABC
-    fig.update_xaxes(range=[-axis_lim, axis_lim], title_text="X", row=1, col=2)
-    fig.update_yaxes(range=[-axis_lim, axis_lim], title_text="Y", row=1, col=2)
-    fig.update_yaxes(scaleanchor="x2", scaleratio=1, row=1, col=2)
-
-    # Clarke tempo
-    fig.update_xaxes(title_text="Tempo (s)", row=2, col=1)
-    fig.update_yaxes(title_text="Amplitude", row=2, col=1)
-
-    # Plano αβ
-    fig.update_xaxes(range=[-ab_lim, ab_lim], title_text="α", row=2, col=2)
-    fig.update_yaxes(range=[-ab_lim, ab_lim], title_text="β", row=2, col=2)
-    fig.update_yaxes(scaleanchor="x4", scaleratio=1, row=2, col=2)
-
-    # Campos V1/V2/V0
-    fig.update_xaxes(range=[-seq_lim, seq_lim], title_text="X", row=3, col=1)
-    fig.update_yaxes(range=[-seq_lim, seq_lim], title_text="Y", row=3, col=1)
-    fig.update_yaxes(scaleanchor="x5", scaleratio=1, row=3, col=1)
-
-    fig.update_xaxes(range=[-seq_lim, seq_lim], title_text="X", row=3, col=2)
-    fig.update_yaxes(range=[-seq_lim, seq_lim], title_text="Y", row=3, col=2)
-    fig.update_yaxes(scaleanchor="x6", scaleratio=1, row=3, col=2)
-
-    fig.update_xaxes(range=[-seq_lim, seq_lim], title_text="X", row=4, col=1)
-    fig.update_yaxes(range=[-seq_lim, seq_lim], title_text="Y", row=4, col=1)
-    fig.update_yaxes(scaleanchor="x7", scaleratio=1, row=4, col=1)
-
-    # Barra RMS
-    fig.update_yaxes(title_text="RMS", row=4, col=2)
-
-    # ----------------- LEGENDAS ABAIXO DE CADA GRÁFICO -----------------
-    add_subplot_caption(fig, 1, 1, "ABC (tempo): formas de onda trifásicas (A, B, C) no domínio do tempo.")
-    add_subplot_caption(fig, 1, 2, "Campo ABC: vetores A/B/C (120°) e resultante; rastro = trajetória da resultante.")
-    add_subplot_caption(fig, 2, 1, "Clarke αβ (tempo): α e β obtidos do trifásico (modo selecionado).")
-    add_subplot_caption(fig, 2, 2, "Plano αβ: trajetória completa + vetor instantâneo (origem → ponto atual).")
-    add_subplot_caption(fig, 3, 1, "Campo V1: sequência positiva (fundamental reconstruída), com rastro do vetor resultante.")
-    add_subplot_caption(fig, 3, 2, "Campo V2: sequência negativa (fundamental reconstruída), com rastro do vetor resultante.")
-    add_subplot_caption(fig, 4, 1, "Campo V0: sequência zero (fundamental reconstruída), com rastro do vetor resultante.")
-    add_subplot_caption(fig, 4, 2, "Barras: magnitudes RMS (|V1|, |V2|, |V0|) estimadas na frequência f0.")
-
-    return fig
-
-
-# =========================================================
-# UI
-# =========================================================
-st.markdown("## ⚡ IEEE 34 Barras — V7 (Campos + Rastros + Sequências + Legendas)")
-st.caption("Upload múltiplo • Seleção do arquivo • Play/Pause estável (não some) • Legendas abaixo dos subplots • V0/V1/V2")
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-with st.sidebar:
-    st.markdown("## ⚙️ Controles")
-
-    st.markdown("### 📂 Arquivos .mat")
-    uploaded = st.file_uploader(
-        "Envie um ou vários arquivos .mat",
-        type=["mat"],
-        accept_multiple_files=True
-    )
-    if not uploaded:
-        st.info("Envie arquivos .mat para começar.")
-        st.stop()
-
-    mats = {}
-    errors = []
-    for uf in uploaded:
-        try:
-            mats[uf.name] = loadmat(io.BytesIO(uf.getvalue()), squeeze_me=False, struct_as_record=False)
-        except Exception as e:
-            errors.append((uf.name, str(e)))
-
-    if errors:
-        st.warning("Alguns arquivos falharam ao carregar:")
-        for name, err in errors:
-            st.write(f"- {name}: {err}")
-
-    if not mats:
-        st.error("Nenhum arquivo válido foi carregado.")
-        st.stop()
-
-    file_names = sorted(mats.keys())
-    selected_file = st.selectbox("Arquivo ativo", file_names, format_func=lambda x: f"📄 {x}")
-    mat = mats[selected_file]
-
+with tab2:
+    cp1, cp2 = st.columns(2)
+    with cp1:
+        V0, V1, V2 = data["V_phasors"]
+        fig_v = go.Figure()
+        fig_v.add_trace(go.Scatterpolar(r=[0, abs(V1)], theta=[0, np.angle(V1, deg=True)], name='V1 (Pos)', line_color='cyan'))
+        fig_v.add_trace(go.Scatterpolar(r=[0, abs(V2)], theta=[0, np.angle(V2, deg=True)], name='V2 (Neg)', line_color='orange'))
+        fig_v.add_trace(go.Scatterpolar(r=[0, abs(V0)], theta=[0, np.angle(V0, deg=True)], name='V0 (Zero)', line_color='yellow'))
+        fig_v.update_layout(title="Fasores Tensão", polar=dict(radialaxis=dict(visible=True), bgcolor=PLOT_BG), paper_bgcolor=PAPER_BG, font=dict(color=FONT_CLR))
+        st.plotly_chart(fig_v, use_container_width=True)
+    
+    with cp2:
+        I0, I1, I2 = data["I_phasors"]
+        fig_i = go.Figure()
+        fig_i.add_trace(go.Scatterpolar(r=[0, abs(I1)], theta=[0, np.angle(I1, deg=True)], name='I1 (Pos)', line_color='cyan'))
+        fig_i.add_trace(go.Scatterpolar(r=[0, abs(I2)], theta=[0, np.angle(I2, deg=True)], name='I2 (Neg)', line_color='orange'))
+        fig_i.add_trace(go.Scatterpolar(r=[0, abs(I0)], theta=[0, np.angle(I0, deg=True)], name='I0 (Zero)', line_color='yellow'))
+        fig_i.update_layout(title="Fasores Corrente", polar=dict(radialaxis=dict(visible=True), bgcolor=PLOT_BG), paper_bgcolor=PAPER_BG, font=dict(color=FONT_CLR))
+        st.plotly_chart(fig_i, use_container_width=True)
+    
     st.divider()
-    st.markdown("### 📍 Sinal")
-    points = [
-        'I_800','V_800','I_T2F','V_T2F',
-        'I_818','V_818','I_820','V_820','I_822','V_822'
-    ]
-    point = st.selectbox("Ponto", points, index=0)
-
-    remove_mean = st.checkbox("Remover offset (DC)", value=True)
-
-    st.divider()
-    st.markdown("### 🔁 Clarke")
-    clarke_mode = st.radio(
-        "Transformada",
-        ["Power Invariant (√2/3)", "Amplitude Invariant (2/3)"],
-        horizontal=True
-    )
-    clarke_mode_key = "power" if "Power" in clarke_mode else "amp"
-
-    st.divider()
-    st.markdown("### 🧩 Componentes Simétricas (V0/V1/V2)")
-    show_seq = st.checkbox("Mostrar campos V0/V1/V2", value=True)
-    seq_f0 = st.number_input("f0 p/ fasor (Hz)", value=60.0, min_value=1.0, step=1.0)
-    seq_window = st.selectbox("Janela p/ fasor", ["hann", "rect"], index=0)
-
-    st.divider()
-    st.markdown("### 🎞️ Animação / Performance")
-    frame_step = st.slider("frame_step (↓ mais suave)", 1, 60, 6, 1)
-    traj_stride = st.slider("traj_stride (↓ rastro mais denso)", 1, 20, 3, 1)
-    play_ms = st.slider("Velocidade Play (ms)", 20, 200, 60, 5)
-    st.caption("Se travar: aumente frame_step e traj_stride.")
-
-    st.divider()
-    st.markdown("### 📊 FFT / THD")
-    show_fft = st.checkbox("Ativar FFT/THD", value=False)
-    if show_fft:
-        window_type = st.selectbox("Janela FFT", ["hann", "rect"], index=0)
-        f_fund = st.number_input("Fundamental THD (Hz)", value=60.0, min_value=1.0, step=1.0)
-        h_max = st.slider("Máx harmônica THD", 5, 60, 25, 1)
-        tol_hz = st.number_input("Tolerância THD (Hz)", value=1.0, min_value=0.1, step=0.1)
-        fft_xmax = st.number_input("Limite X FFT (Hz)", value=float(h_max)*float(f_fund) + 10.0, min_value=10.0, step=10.0)
-
-
-# =========================================================
-# LOAD SIGNAL
-# =========================================================
-m1 = extract_m1_location(mat)
-t, x = extract_ts_from_mat(mat, point)
-
-if t is None or x is None:
-    st.error(f"Não encontrei `ts_{point}.Time/Data` dentro de `ts` no arquivo `{selected_file}`.")
-    st.stop()
-
-t = np.asarray(t).squeeze()
-
-# Exigimos N×3
-if not (isinstance(x, np.ndarray) and x.ndim == 2 and x.shape[1] >= 3):
-    st.error(f"Esta versão exige sinal trifásico N×3. Recebi x.shape={getattr(x, 'shape', None)}.")
-    st.stop()
-
-a, b, c = x[:, 0], x[:, 1], x[:, 2]
-
-if remove_mean:
-    a = a - np.mean(a)
-    b = b - np.mean(b)
-    c = c - np.mean(c)
-
-dt = np.diff(t)
-fs = 1.0 / float(np.mean(dt)) if len(dt) > 0 else 0.0
-
-alpha, beta = clarke_transform(a, b, c, mode=clarke_mode_key)
-
-
-# =========================================================
-# SEQUÊNCIAS (fasores RMS + reconstrução fundamental)
-# =========================================================
-Va = phasor_at_f0(a, t, f0=float(seq_f0), window=seq_window, remove_mean=False)
-Vb = phasor_at_f0(b, t, f0=float(seq_f0), window=seq_window, remove_mean=False)
-Vc = phasor_at_f0(c, t, f0=float(seq_f0), window=seq_window, remove_mean=False)
-
-V0, V1, V2 = symmetrical_components(Va, Vb, Vc)
-
-Va0, Vb0, Vc0 = inv_symmetrical_components(V0, 0, 0)
-Va1, Vb1, Vc1 = inv_symmetrical_components(0, V1, 0)
-Va2, Vb2, Vc2 = inv_symmetrical_components(0, 0, V2)
-
-a0 = synth_from_phasor(Va0, t, seq_f0)
-b0 = synth_from_phasor(Vb0, t, seq_f0)
-c0 = synth_from_phasor(Vc0, t, seq_f0)
-
-a1 = synth_from_phasor(Va1, t, seq_f0)
-b1 = synth_from_phasor(Vb1, t, seq_f0)
-c1 = synth_from_phasor(Vc1, t, seq_f0)
-
-a2 = synth_from_phasor(Va2, t, seq_f0)
-b2 = synth_from_phasor(Vb2, t, seq_f0)
-c2 = synth_from_phasor(Vc2, t, seq_f0)
-
-seq_data = {
-    "a0": a0, "b0": b0, "c0": c0,
-    "a1": a1, "b1": b1, "c1": c1,
-    "a2": a2, "b2": b2, "c2": c2
-}
-
-
-# =========================================================
-# MAIN VIEW
-# =========================================================
-st.markdown(
-    f"### 🧪 Caso selecionado\n"
-    f"- **Arquivo:** `{selected_file}`\n"
-    f"- **Ponto:** `{point}`\n"
-    f"- **m1:** `{m1}`\n"
-    f"- **fs estimada:** `{fs:.2f} Hz`\n"
-    f"- **N:** `{len(t)}` | **frame_step:** `{frame_step}` | **traj_stride:** `{traj_stride}` | **play_ms:** `{play_ms}`"
-)
-
-st.markdown("#### 📌 Componentes Simétricas (RMS) na fundamental")
-st.table({
-    "Componente": ["V1 (Positiva)", "V2 (Negativa)", "V0 (Zero)"],
-    "|V| RMS": [float(np.abs(V1)), float(np.abs(V2)), float(np.abs(V0))],
-    "∠ (deg)": [float(np.angle(V1, deg=True)), float(np.angle(V2, deg=True)), float(np.angle(V0, deg=True))]
-})
-
-fig = build_animated_figure(
-    t=t, a=a, b=b, c=c,
-    alpha=alpha, beta=beta,
-    seq_data=seq_data,
-    V0=V0, V1=V1, V2=V2,
-    show_seq=show_seq,
-    frame_step=frame_step,
-    traj_stride=traj_stride,
-    clarke_label=("power" if clarke_mode_key == "power" else "amp"),
-    play_ms=play_ms
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-
-# =========================================================
-# FFT / THD (optional)
-# =========================================================
-if show_fft:
-    st.divider()
-    st.markdown("## 📊 FFT e THD")
-
-    if fs <= 0 or len(a) < 8:
-        st.warning("FFT/THD ativados, mas fs inválida ou sinal curto.")
-    else:
-        freqs, Fa = compute_fft_rms(a, fs, window=window_type, remove_mean=False)
-        _, Fb = compute_fft_rms(b, fs, window=window_type, remove_mean=False)
-        _, Fc = compute_fft_rms(c, fs, window=window_type, remove_mean=False)
-
-        thd_a = compute_thd_percent(freqs, Fa, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-        thd_b = compute_thd_percent(freqs, Fb, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-        thd_c = compute_thd_percent(freqs, Fc, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-
-        c1, c2 = st.columns([1, 1])
-
-        with c1:
-            st.subheader("THD (%) por fase")
-            st.table({
-                "Fase": ["A", "B", "C"],
-                "THD (%)": [
-                    None if np.isnan(thd_a) else round(thd_a, 2),
-                    None if np.isnan(thd_b) else round(thd_b, 2),
-                    None if np.isnan(thd_c) else round(thd_c, 2),
-                ]
-            })
-
-        with c2:
-            fig_fft = go.Figure()
-            fig_fft.add_trace(go.Scatter(x=freqs, y=Fa, mode="lines", name="A", line=dict(color=CLR_A)))
-            fig_fft.add_trace(go.Scatter(x=freqs, y=Fb, mode="lines", name="B", line=dict(color=CLR_B)))
-            fig_fft.add_trace(go.Scatter(x=freqs, y=Fc, mode="lines", name="C", line=dict(color=CLR_C)))
-            fig_fft.update_layout(
-                title=f"FFT RMS — janela {window_type}",
-                xaxis_title="Frequência (Hz)",
-                yaxis_title="Amplitude (RMS)",
-                height=380,
-                margin=dict(l=25, r=15, t=60, b=35),
-                paper_bgcolor=PAPER_BG,
-                plot_bgcolor=PLOT_BG,
-                font=dict(color=FONT_CLR),
-                legend=dict(orientation="h", y=1.02, x=1, xanchor="right", yanchor="bottom"),
-            )
-            fig_fft.update_xaxes(range=[0, float(fft_xmax)], showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
-            fig_fft.update_yaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
-            st.plotly_chart(fig_fft, use_container_width=True)
+    Za, Zb, Zc = data["Z_traj"]
+    fig_rx = go.Figure()
+    lim = 200; fz = lambda Z: Z[np.abs(Z)<lim]
+    
+    fig_rx.add_trace(go.Scatter(x=np.real(fz(Za)), y=np.imag(fz(Za)), mode='lines', name='Za', line=dict(color="#FF5252")))
+    fig_rx.add_trace(go.Scatter(x=np.real(fz(Zb)), y=np.imag(fz(Zb)), mode='lines', name='Zb', line=dict(color="#4CAF50")))
+    fig_rx.add_trace(go.Scatter(x=np.real(fz(Zc)), y=np.imag(fz(Zc)), mode='lines', name='Zc', line=dict(color="#448AFF")))
+    
+    fig_rx.update_layout(title="Plano de Impedância (R-X)", paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG, font=dict(color=FONT_CLR),
+                         xaxis=dict(gridcolor=GRID_CLR, zeroline=True), yaxis=dict(gridcolor=GRID_CLR, zeroline=True, scaleanchor="x"), height=600)
+    st.plotly_chart(fig_rx, use_container_width=True)
