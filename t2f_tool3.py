@@ -36,8 +36,7 @@ THEME = {
     "A": "#00ffff", "B": "#ff3333", "C": "#00ff00", 
     "V1": "#4facfe", "V2": "#f093fb", "V0": "#fcc203",
     "Curve": "#ffff00", 
-    "cursor": "#FFFF00",
-    "Ref": "#ff6600"
+    "cursor": "#FFFF00" 
 }
 
 pg.setConfigOption('background', THEME["bg_panel"])
@@ -118,6 +117,7 @@ def calculate_tcc(I_val, Ip, TD, curve_name):
 
     safe_Ip = Ip if Ip > 0 else 0.001
     
+    # Vetorial
     if isinstance(I_val, np.ndarray):
         M = I_val / safe_Ip
         t = np.full_like(I_val, np.inf)
@@ -127,6 +127,8 @@ def calculate_tcc(I_val, Ip, TD, curve_name):
             denom[denom == 0] = 1e-9
             t[mask] = TD * ( (A / denom) + B )
         return t
+    
+    # Escalar
     else:
         M = I_val / safe_Ip
         if M <= 1.001: return float('inf')
@@ -158,6 +160,7 @@ class SidePanel(QFrame):
         lbl = QLabel("T2F Lab"); lbl.setObjectName("HeaderLabel"); lbl.setAlignment(Qt.AlignCenter)
         l.addWidget(lbl)
         
+        # Dados
         g1 = QGroupBox("Dados"); v1 = QVBoxLayout()
         self.btn_load = QPushButton("Carregar .MAT")
         self.btn_ref = QPushButton("Fixar como Referência")
@@ -170,6 +173,7 @@ class SidePanel(QFrame):
         v1.addWidget(QLabel("Sinal Corrente:")); v1.addWidget(self.cmb_i)
         g1.setLayout(v1); l.addWidget(g1)
         
+        # RMS Real
         g_rms = QGroupBox("RMS Real"); v_rms = QVBoxLayout()
         style = "font-size: 16px; font-weight: bold; padding: 6px; border-radius: 4px; background: #222; border: 1px solid #444;"
         self.lbl_rms_a = QLabel("Ia: 0.00 A"); self.lbl_rms_a.setStyleSheet(f"color: {THEME['A']}; {style}"); self.lbl_rms_a.setAlignment(Qt.AlignCenter)
@@ -178,43 +182,21 @@ class SidePanel(QFrame):
         v_rms.addWidget(self.lbl_rms_a); v_rms.addWidget(self.lbl_rms_b); v_rms.addWidget(self.lbl_rms_c)
         g_rms.setLayout(v_rms); l.addWidget(g_rms)
         
+        # Religador
         g2 = QGroupBox("Religador"); v2 = QFormLayout()
         self.cmb_curve = QComboBox(); self.cmb_curve.addItems(list(CURVES.keys()))
         self.sp_pu = QDoubleSpinBox(); self.sp_pu.setRange(0.1, 10000); self.sp_pu.setValue(25.0); self.sp_pu.setDecimals(1)
         self.sp_td = QDoubleSpinBox(); self.sp_td.setRange(0.01, 100); self.sp_td.setValue(0.5); self.sp_td.setSingleStep(0.05)
+        
         v2.addRow("Curva:", self.cmb_curve)
         v2.addRow("Pickup (A):", self.sp_pu)
         v2.addRow("Dial (TMS):", self.sp_td)
         g2.setLayout(v2); l.addWidget(g2)
         
-        # SEÇÃO DE SIMULAÇÃO COM PASSOS PEQUENOS
-        g3 = QGroupBox("Simulação"); v3 = QVBoxLayout()
-        
-        # Controle de passo (REDUZIDO para 1-10)
-        h_step = QHBoxLayout()
-        h_step.addWidget(QLabel("Passo:"))
-        self.sp_speed = QSpinBox()
-        self.sp_speed.setRange(1, 10)  # MUDANÇA: limite reduzido
-        self.sp_speed.setValue(1)      # MUDANÇA: começa em 1
-        self.sp_speed.setSuffix(" samples")
-        self.sp_speed.setToolTip("Quantidade de amostras a pular (1 = máxima fluidez)")
-        h_step.addWidget(self.sp_speed)
-        v3.addLayout(h_step)
-        
-        # Slider de velocidade (taxa de atualização)
-        h_vel = QHBoxLayout()
-        h_vel.addWidget(QLabel("Velocidade:"))
-        self.sli_speed = QSlider(Qt.Horizontal)
-        self.sli_speed.setRange(1, 10)
-        self.sli_speed.setValue(3)  # MUDANÇA: velocidade padrão mais baixa
-        self.sli_speed.setToolTip("Velocidade de reprodução da simulação")
-        self.lbl_speed = QLabel("3x")
-        self.lbl_speed.setFixedWidth(30)
-        self.lbl_speed.setAlignment(Qt.AlignCenter)
-        h_vel.addWidget(self.sli_speed)
-        h_vel.addWidget(self.lbl_speed)
-        v3.addLayout(h_vel)
-        
+        # Simulação
+        g3 = QGroupBox("Simulação"); v3 = QFormLayout()
+        self.sp_speed = QSpinBox(); self.sp_speed.setRange(1, 100); self.sp_speed.setValue(1)
+        v3.addRow("Velocidade:", self.sp_speed)
         g3.setLayout(v3); l.addWidget(g3)
         l.addStretch()
 
@@ -224,7 +206,7 @@ class SidePanel(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("T2F Power Analysis - Leonardo Edition (Comparação + TCC)")
+        self.setWindowTitle("T2F Power Analysis - Leonardo Edition (Comparação)")
         self.resize(1600, 950)
         
         self.raw_mats = {}
@@ -259,7 +241,7 @@ class MainWindow(QMainWindow):
         rhs = QWidget(); v = QVBoxLayout(rhs); v.setContentsMargins(15,15,15,15)
         self.tabs = QTabWidget()
         
-        # TAB 1: ANÁLISE
+        # --- TAB 1: ANÁLISE ---
         t1 = QWidget(); g1 = QGridLayout(t1)
         self.pl_vt = ModernPlot("Tensão", "s", "V")
         self.pl_it = ModernPlot("Corrente", "s", "A")
@@ -277,14 +259,12 @@ class MainWindow(QMainWindow):
         g1.setRowStretch(0, 2); g1.setRowStretch(1, 2); g1.setRowStretch(2, 1)
         self.tabs.addTab(t1, "📊 Análise")
         
-        # TAB 2: PROTEÇÃO
+        # --- TAB 2: PROTEÇÃO ---
         t2 = QWidget(); g2 = QGridLayout(t2)
         
         self.pl_tcc = ModernPlot("Religador TCC (Corrente)", "I (A)", "t (s)")
         self.pl_tcc.setLogMode(True, True) 
         self.pl_tcc.showGrid(True, True, alpha=0.4)
-        # CORREÇÃO: Usar disableAutoRange para evitar recursão
-        self.pl_tcc.disableAutoRange()
         self.pl_tcc.setXRange(-2, 5.5, padding=0)
         self.pl_tcc.setYRange(-2, 4.5, padding=0)
         
@@ -292,7 +272,7 @@ class MainWindow(QMainWindow):
         g2.addWidget(self.pl_tcc, 0, 0); g2.addWidget(self.pl_cla, 1, 0)
         self.tabs.addTab(t2, "🛡️ Proteção")
         
-        # TAB 3: COMPARAÇÃO
+        # --- TAB 3: COMPARAÇÃO ---
         t3 = QWidget(); g3 = QGridLayout(t3)
         
         self.pl_vt_comp = ModernPlot("Tensão - Comparação", "s", "V")
@@ -314,20 +294,6 @@ class MainWindow(QMainWindow):
         
         self.tabs.addTab(t3, "🔁 Comparação")
         
-        # TAB 4: COMPARAÇÃO TCC
-        t4 = QWidget(); g4 = QVBoxLayout(t4)
-        
-        self.pl_tcc_comp = ModernPlot("Comparação TCC - Religador", "I (A)", "t (s)")
-        self.pl_tcc_comp.setLogMode(True, True)
-        self.pl_tcc_comp.showGrid(True, True, alpha=0.4)
-        # CORREÇÃO: Usar disableAutoRange para evitar recursão
-        self.pl_tcc_comp.disableAutoRange()
-        self.pl_tcc_comp.setXRange(-2, 5.5, padding=0)
-        self.pl_tcc_comp.setYRange(-2, 4.5, padding=0)
-        
-        g4.addWidget(self.pl_tcc_comp)
-        self.tabs.addTab(t4, "⚖️ Comparação TCC")
-        
         v.addWidget(self.tabs)
         
         ctrl = QFrame(); ctrl.setFixedHeight(50); hc = QHBoxLayout(ctrl)
@@ -347,7 +313,6 @@ class MainWindow(QMainWindow):
         self.side.sp_pu.valueChanged.connect(self.upd_tcc)
         self.side.sp_td.valueChanged.connect(self.upd_tcc)
         self.side.cmb_curve.currentTextChanged.connect(self.upd_tcc)
-        self.side.sli_speed.valueChanged.connect(self.update_speed_label)
 
     def create_vector_arrow(self, plot, color):
         line = pg.PlotDataItem(pen=pg.mkPen(color, width=3))
@@ -388,6 +353,8 @@ class MainWindow(QMainWindow):
         self.txt_a = pg.TextItem(text="Ia", anchor=(0, 1), color=THEME['A']); self.pl_tcc.addItem(self.txt_a)
         self.txt_b = pg.TextItem(text="Ib", anchor=(0, 1), color=THEME['B']); self.pl_tcc.addItem(self.txt_b)
         self.txt_c = pg.TextItem(text="Ic", anchor=(0, 1), color=THEME['C']); self.pl_tcc.addItem(self.txt_c)
+        
+        self.upd_tcc()
         
         self.cl_tr = self.pl_cla.plot(pen=pg.mkPen('w', width=1))
         self.sp_cl = pg.ScatterPlotItem(size=10, brush=THEME['accent'], symbol='o')
@@ -435,40 +402,6 @@ class MainWindow(QMainWindow):
         self.bg_i_ref = pg.BarGraphItem(x=[1.2,2.2,3.2], height=[0,0,0], width=0.35, brushes=[THEME['A'], THEME['B'], THEME['C']])
         self.pl_ib_comp.addItem(self.bg_i_comp)
         self.pl_ib_comp.addItem(self.bg_i_ref)
-        
-        # TAB 4: COMPARAÇÃO TCC
-        self.ct_tcc_atual = self.pl_tcc_comp.plot(pen=pg.mkPen(THEME['Curve'], width=3))
-        self.ct_tcc_ref = self.pl_tcc_comp.plot(pen=pg.mkPen(THEME['Ref'], width=3, style=Qt.DashLine))
-        
-        self.line_pickup_comp = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', style=Qt.DotLine, width=1))
-        self.pl_tcc_comp.addItem(self.line_pickup_comp)
-        
-        self.sp_a_comp = pg.ScatterPlotItem(size=18, brush=THEME['A'], symbol='o', pen=pg.mkPen('k', width=1))
-        self.sp_a_comp.setZValue(10)
-        self.sp_b_comp = pg.ScatterPlotItem(size=18, brush=THEME['B'], symbol='t', pen=pg.mkPen('k', width=1))
-        self.sp_b_comp.setZValue(10)
-        self.sp_c_comp = pg.ScatterPlotItem(size=18, brush=THEME['C'], symbol='s', pen=pg.mkPen('k', width=1))
-        self.sp_c_comp.setZValue(10)
-        
-        self.sp_a_ref = pg.ScatterPlotItem(size=18, brush=None, symbol='o', pen=pg.mkPen(THEME['A'], width=3))
-        self.sp_a_ref.setZValue(10)
-        self.sp_b_ref = pg.ScatterPlotItem(size=18, brush=None, symbol='t', pen=pg.mkPen(THEME['B'], width=3))
-        self.sp_b_ref.setZValue(10)
-        self.sp_c_ref = pg.ScatterPlotItem(size=18, brush=None, symbol='s', pen=pg.mkPen(THEME['C'], width=3))
-        self.sp_c_ref.setZValue(10)
-        
-        self.pl_tcc_comp.addItem(self.sp_a_comp); self.pl_tcc_comp.addItem(self.sp_b_comp); self.pl_tcc_comp.addItem(self.sp_c_comp)
-        self.pl_tcc_comp.addItem(self.sp_a_ref); self.pl_tcc_comp.addItem(self.sp_b_ref); self.pl_tcc_comp.addItem(self.sp_c_ref)
-        
-        self.txt_a_comp = pg.TextItem(text="Ia", anchor=(0, 1), color=THEME['A']); self.pl_tcc_comp.addItem(self.txt_a_comp)
-        self.txt_b_comp = pg.TextItem(text="Ib", anchor=(0, 1), color=THEME['B']); self.pl_tcc_comp.addItem(self.txt_b_comp)
-        self.txt_c_comp = pg.TextItem(text="Ic", anchor=(0, 1), color=THEME['C']); self.pl_tcc_comp.addItem(self.txt_c_comp)
-        
-        self.txt_a_ref = pg.TextItem(text="Ia-ref", anchor=(0, 1), color=THEME['Ref']); self.pl_tcc_comp.addItem(self.txt_a_ref)
-        self.txt_b_ref = pg.TextItem(text="Ib-ref", anchor=(0, 1), color=THEME['Ref']); self.pl_tcc_comp.addItem(self.txt_b_ref)
-        self.txt_c_ref = pg.TextItem(text="Ic-ref", anchor=(0, 1), color=THEME['Ref']); self.pl_tcc_comp.addItem(self.txt_c_ref)
-        
-        self.upd_tcc()
 
     def load_dialog(self):
         fs, _ = QFileDialog.getOpenFileNames(self, "Load", "", "*.mat")
@@ -513,27 +446,24 @@ class MainWindow(QMainWindow):
         self.sli.setRange(0, n-1); self.sli.setValue(0); self.update_frame()
 
     def set_reference(self):
+        """Guarda o sinal atual como referência para comparação"""
         if self.t is None or self.v is None or self.i is None:
             return
         self.t_ref = self.t.copy()
         self.v_ref = self.v.copy()
         self.i_ref = self.i.copy()
         self.update_comparison()
-        self.update_tcc_comparison()
 
     def update_vector(self, line, tip, mag, ang):
         x = mag * np.cos(np.angle(ang)); y = mag * np.sin(np.angle(ang))
         line.setData([0, x], [0, y]); tip.setData([x], [y])
-
-    def update_speed_label(self):
-        speed = self.side.sli_speed.value()
-        self.side.lbl_speed.setText(f"{speed}x")
 
     def update_frame(self):
         if self.t is None: return
         idx = self.sli.value()
         step = self.side.sp_speed.value()
         
+        # TAB 1: ANÁLISE
         self.cv_va.setData(self.t, self.v[:,0]); self.cv_vb.setData(self.t, self.v[:,1]); self.cv_vc.setData(self.t, self.v[:,2])
         self.cv_ia.setData(self.t, self.i[:,0]); self.cv_ib.setData(self.t, self.i[:,1]); self.cv_ic.setData(self.t, self.i[:,2])
         now = self.t[idx]; self.cursor_v.setValue(now); self.cursor_i.setValue(now)
@@ -562,6 +492,7 @@ class MainWindow(QMainWindow):
             lim_v = max(rms_va, rms_vb, rms_vc, 10.0) * 1.2; self.pl_vp.setXRange(-lim_v, lim_v); self.pl_vp.setYRange(-lim_v, lim_v)
             lim_i = max(rms_ia, rms_ib, rms_ic, 1.0) * 1.2; self.pl_ip.setXRange(-lim_i, lim_i); self.pl_ip.setYRange(-lim_i, lim_i)
             
+            # TAB 2: PROTEÇÃO (TCC)
             Ip = self.side.sp_pu.value(); TD = self.side.sp_td.value()
             curve = self.side.cmb_curve.currentText()
             Y_INF = 2000.0 
@@ -587,18 +518,19 @@ class MainWindow(QMainWindow):
         self.sp_cl.setData(x=np.array([al[idx]]), y=np.array([be[idx]]))
         self.lbl_t.setText(f"{self.t[idx]:.3f}s")
         
+        # Atualizar comparação
         self.update_comparison()
-        self.update_tcc_comparison()
         
-        if self.playing and idx < len(self.t)-1: 
-            self.sli.setValue(idx + step)
+        if self.playing and idx < len(self.t)-1: self.sli.setValue(idx + step)
 
     def update_comparison(self):
+        """Atualiza a aba de comparação com sinal atual + referência"""
         if self.t is None or self.v is None or self.i is None:
             return
             
         idx = self.sli.value()
         
+        # --- SINAL ATUAL (LINHAS SÓLIDAS) ---
         self.cv_va_comp.setData(self.t, self.v[:,0])
         self.cv_vb_comp.setData(self.t, self.v[:,1])
         self.cv_vc_comp.setData(self.t, self.v[:,2])
@@ -647,6 +579,7 @@ class MainWindow(QMainWindow):
             self.bg_v_comp.setOpts(height=[abs(V1), abs(V2), abs(V0)])
             self.bg_i_comp.setOpts(height=[abs(I1), abs(I2), abs(I0)])
         
+        # --- SINAL DE REFERÊNCIA (LINHAS TRACEJADAS) ---
         if self.t_ref is not None and self.v_ref is not None and self.i_ref is not None:
             n = min(len(self.t_ref), len(self.v_ref), len(self.i_ref))
             
@@ -705,84 +638,23 @@ class MainWindow(QMainWindow):
                 self.pl_ip_comp.setXRange(-lim_i, lim_i)
                 self.pl_ip_comp.setYRange(-lim_i, lim_i)
 
-    def update_tcc_comparison(self):
-        if self.t is None or self.i is None:
-            return
-        
-        idx = self.sli.value()
-        Ip = self.side.sp_pu.value()
-        TD = self.side.sp_td.value()
-        curve = self.side.cmb_curve.currentText()
-        Y_INF = 2000.0
-        
-        if Ip > 0:
-            self.line_pickup_comp.setValue(math.log10(Ip))
-        
-        w = 128
-        i0 = max(0, idx-w)
-        i1 = min(len(self.t), idx+w)
-        
-        if i1-i0 > 16:
-            rms_ia = true_rms(self.i[i0:i1,0])
-            rms_ib = true_rms(self.i[i0:i1,1])
-            rms_ic = true_rms(self.i[i0:i1,2])
-            
-            def update_pt_tcc(I_val, sp, txt):
-                x_safe = max(I_val, 0.015)
-                t_calc = calculate_tcc(x_safe, Ip, TD, curve)
-                if t_calc == float('inf') or t_calc > Y_INF:
-                    y_safe = Y_INF
-                else:
-                    y_safe = t_calc
-                sp.setData([x_safe], [y_safe])
-                txt.setPos(math.log10(x_safe), math.log10(y_safe))
-                txt.setText(f"{I_val:.1f}A")
-            
-            update_pt_tcc(rms_ia, self.sp_a_comp, self.txt_a_comp)
-            update_pt_tcc(rms_ib, self.sp_b_comp, self.txt_b_comp)
-            update_pt_tcc(rms_ic, self.sp_c_comp, self.txt_c_comp)
-            
-            if self.t_ref is not None and self.i_ref is not None:
-                n = len(self.t_ref)
-                idx_ref = int((idx / len(self.t)) * n) if len(self.t) > 0 else 0
-                i0_ref = max(0, idx_ref-w)
-                i1_ref = min(n, idx_ref+w)
-                
-                if i1_ref-i0_ref > 16:
-                    rms_ia_ref = true_rms(self.i_ref[i0_ref:i1_ref,0])
-                    rms_ib_ref = true_rms(self.i_ref[i0_ref:i1_ref,1])
-                    rms_ic_ref = true_rms(self.i_ref[i0_ref:i1_ref,2])
-                    
-                    update_pt_tcc(rms_ia_ref, self.sp_a_ref, self.txt_a_ref)
-                    update_pt_tcc(rms_ib_ref, self.sp_b_ref, self.txt_b_ref)
-                    update_pt_tcc(rms_ic_ref, self.sp_c_ref, self.txt_c_ref)
-
     def upd_tcc(self):
         Ip = self.side.sp_pu.value(); TD = self.side.sp_td.value()
         curve = self.side.cmb_curve.currentText()
-        
-        if Ip > 0: 
-            self.line_pickup.setValue(math.log10(Ip))
-            self.line_pickup_comp.setValue(math.log10(Ip))
-        
+        if Ip > 0: self.line_pickup.setValue(math.log10(Ip))
         start_I = Ip * 1.01; end_I = 300000 
         if start_I < end_I:
             I_plot = np.logspace(np.log10(start_I), np.log10(end_I), 1000)
             t_plot = calculate_tcc(I_plot, Ip, TD, curve)
             self.ct_main.setData(I_plot, t_plot)
-            self.ct_tcc_atual.setData(I_plot, t_plot)
-            self.ct_tcc_ref.setData(I_plot, t_plot)
+            self.pl_tcc.setXRange(-2, 5.5, padding=0)
+            self.pl_tcc.setYRange(-2, 4.5, padding=0)
+        else: self.ct_main.clear()
 
     def toggle(self):
-        self.playing = not self.playing
-        self.btn_p.setText("⏸" if self.playing else "▶")
-        if self.playing:
-            # MUDANÇA: Intervalos mais longos para navegação fluida
-            speed = self.side.sli_speed.value()
-            interval = max(20, int(100 / speed))  # 20-100ms (10-50 FPS)
-            self.timer.start(interval)
-        else:
-            self.timer.stop()
+        self.playing = not self.playing; self.btn_p.setText("⏸" if self.playing else "▶")
+        if self.playing: self.timer.start(40)
+        else: self.timer.stop()
         
     def seek(self): self.update_frame()
 
