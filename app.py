@@ -1,831 +1,366 @@
-import io
-import numpy as np
 import streamlit as st
+import numpy as np
+import scipy.io as sio
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-from scipy.io import loadmat
-from scipy.signal import windows
-from scipy.fft import fft, fftfreq
-
+import time
 
 # =========================================================
-# CONFIG
+# 📚 1. CONFIGURAÇÕES
 # =========================================================
-st.set_page_config(
-    page_title="IEEE34 – V6 (Campos + Rastros + Sequências V0/V1/V2)",
-    layout="wide"
-)
-
-ANGLES = np.deg2rad([0, 120, 240])  # A,B,C
-
-# Tema dark
-PAPER_BG = "#0f1117"
-PLOT_BG  = "#0f1117"
-GRID_CLR = "rgba(255,255,255,0.08)"
-ZERO_CLR = "rgba(255,255,255,0.10)"
-FONT_CLR = "#e6edf3"
-LEG_CLR  = "#c9d1d9"
-
-# Botões plotly (mais visíveis)
-BTN_BG   = "rgba(22,27,34,0.95)"
-BTN_BRD  = "rgba(88,166,255,0.65)"
-
-# Slider plotly
-SL_BG    = "rgba(22,27,34,0.75)"
-SL_BRD   = "rgba(240,246,252,0.25)"
-
-
-# =========================================================
-# CORE MATH: Clarke, FFT, THD
-# =========================================================
-def clarke_transform(a, b, c, mode="power"):
-    k = (2/3) if mode == "amp" else np.sqrt(2/3)
-    alpha = k * (a - 0.5*b - 0.5*c)
-    beta  = k * ((np.sqrt(3)/2)*b - (np.sqrt(3)/2)*c)
-    return alpha, beta
-
-
-def compute_fft_rms(signal, fs, window="hann", remove_mean=True):
-    signal = np.asarray(signal).squeeze()
-    N = len(signal)
-    if N < 4 or fs <= 0:
-        return np.array([]), np.array([])
-
-    x = signal.copy()
-    if remove_mean:
-        x = x - np.mean(x)
-
-    w = windows.hann(N) if window == "hann" else np.ones(N)
-    X = fft(x * w)
-    freqs = fftfreq(N, d=1/fs)
-
-    pos = freqs >= 0
-    freqs = freqs[pos]
-    X = X[pos]
-
-    X_mag = (2.0 / np.sum(w)) * np.abs(X)
-    X_rms = X_mag / np.sqrt(2)
-    return freqs, X_rms
-
-
-def compute_thd_percent(freqs, spectrum_rms, f_fund=60.0, h_max=25, tol_hz=1.0):
-    if len(freqs) == 0:
-        return np.nan
-
-    freqs = np.asarray(freqs)
-    spec = np.asarray(spectrum_rms)
-
-    idx = np.where(np.abs(freqs - f_fund) <= tol_hz)[0]
-    if len(idx) == 0:
-        return np.nan
-    X1 = spec[idx[0]]
-    if X1 <= 1e-12:
-        return np.nan
-
-    harm_sq = 0.0
-    for h in range(2, int(h_max) + 1):
-        fh = h * f_fund
-        ih = np.where(np.abs(freqs - fh) <= tol_hz)[0]
-        if len(ih) > 0:
-            harm_sq += spec[ih[0]]**2
-
-    return float(np.sqrt(harm_sq) / X1 * 100.0)
-
-
-# =========================================================
-# SEQUÊNCIAS SIMÉTRICAS (Fortescue)
-# =========================================================
-def phasor_at_f0(x, t, f0=60.0, window="hann", remove_mean=True):
-    """
-    Estima fasor complexo RMS na frequência f0 via projeção (DFT na freq alvo).
-    """
-    x = np.asarray(x).squeeze()
-    t = np.asarray(t).squeeze()
-    if len(x) != len(t) or len(x) < 8:
-        return 0.0 + 0.0j
-
-    if remove_mean:
-        x = x - np.mean(x)
-
-    N = len(x)
-    w = windows.hann(N) if window == "hann" else np.ones(N)
-    xw = x * w
-
-    exp_term = np.exp(-1j * 2*np.pi*f0*t)
-    X = np.sum(xw * exp_term)
-    W = np.sum(w)
-
-    A_peak = 2.0 * X / W
-    Vrms = A_peak / np.sqrt(2)
-    return Vrms
-
-
-def symmetrical_components(Va, Vb, Vc):
-    a = np.exp(1j * 2*np.pi/3)
-    T = (1/3) * np.array([
-        [1,   1,   1],
-        [1, a**2,  a],
-        [1,   a, a**2]
-    ], dtype=complex)
-    V0, V1, V2 = T @ np.array([Va, Vb, Vc], dtype=complex)
-    return V0, V1, V2
-
-
-def inv_symmetrical_components(V0, V1, V2):
-    a = np.exp(1j * 2*np.pi/3)
-    Ti = np.array([
-        [1,   1,   1],
-        [1,   a, a**2],
-        [1, a**2,  a]
-    ], dtype=complex)
-    Va, Vb, Vc = Ti @ np.array([V0, V1, V2], dtype=complex)
-    return Va, Vb, Vc
-
-
-def synth_from_phasor(Vrms, t, f0):
-    return np.sqrt(2) * np.real(Vrms * np.exp(1j * 2*np.pi*f0*t))
-
-
-# =========================================================
-# MATLAB EXTRACTION (robust-ish)
-# =========================================================
-def _mat_getfield(obj, name):
-    if hasattr(obj, name):
-        return getattr(obj, name)
-    try:
-        if hasattr(obj, "dtype") and obj.dtype.names and name in obj.dtype.names:
-            return obj[name]
-    except Exception:
-        pass
-    return None
-
-
-def extract_ts_from_mat(mat, point_name):
-    """
-    Espera:
-      mat['ts'] -> struct
-      ts.ts_<POINT>.Time / .Data
-    """
-    if 'ts' not in mat:
-        return None, None
-
-    ts_root = mat['ts']
-    if isinstance(ts_root, np.ndarray):
-        ts_root = ts_root.squeeze()
-        if isinstance(ts_root, np.ndarray) and ts_root.dtype == object:
-            ts_root = ts_root.item()
-
-    key = f"ts_{point_name}"
-    entry = _mat_getfield(ts_root, key)
-    if entry is None:
-        return None, None
-
-    if isinstance(entry, np.ndarray):
-        entry = entry.squeeze()
-        if isinstance(entry, np.ndarray) and entry.dtype == object:
-            entry = entry.item()
-
-    time_ = _mat_getfield(entry, "Time")
-    data_ = _mat_getfield(entry, "Data")
-    if time_ is None or data_ is None:
-        return None, None
-
-    t = np.asarray(time_).squeeze()
-    x = np.asarray(data_).squeeze()
-
-    if x.ndim == 2 and x.shape[0] == 3 and x.shape[1] == t.shape[0]:
-        x = x.T
-
-    return t, x
-
-
-def extract_m1_location(mat):
-    if 'm1_location' not in mat:
-        return None
-    try:
-        return float(np.asarray(mat['m1_location']).squeeze())
-    except Exception:
-        return None
-
-
-# =========================================================
-# Campo ABC: resultante XY por amostra
-# =========================================================
-def resultant_xy_series(a, b, c):
-    xa = a * np.cos(ANGLES[0]); ya = a * np.sin(ANGLES[0])
-    xb = b * np.cos(ANGLES[1]); yb = b * np.sin(ANGLES[1])
-    xc = c * np.cos(ANGLES[2]); yc = c * np.sin(ANGLES[2])
-    rx = xa + xb + xc
-    ry = ya + yb + yc
-    return rx, ry
-
-
-def abc_vectors_xy(a_val, b_val, c_val):
-    vals = np.array([a_val, b_val, c_val], dtype=float)
-    xs = vals * np.cos(ANGLES)
-    ys = vals * np.sin(ANGLES)
-    vecs = list(zip(xs, ys))
-    rx = sum(v[0] for v in vecs)
-    ry = sum(v[1] for v in vecs)
-    return vecs, (rx, ry)
-
-
-# =========================================================
-# FIGURA ANIMADA: V0/V1/V2 NO MESMO GRÁFICO
-# =========================================================
-def build_animated_figure(
-    t, a, b, c,
-    alpha, beta,
-    seq_data,     # dict: a1,b1,c1,a2,b2,c2,a0,b0,c0
-    V0, V1, V2,
-    show_seq=True,
-    frame_step=6,
-    traj_stride=3,
-    clarke_label="power"
-):
-    N = len(t)
-
-    frame_idxs = list(range(0, N, frame_step))
-    if frame_idxs[-1] != N - 1:
-        frame_idxs.append(N - 1)
-
-    # slider com poucos steps (não polui)
-    max_slider_steps = 60
-    if len(frame_idxs) > max_slider_steps:
-        slider_idxs = np.linspace(0, len(frame_idxs) - 1, max_slider_steps).astype(int)
-        slider_frame_idxs = [frame_idxs[i] for i in slider_idxs]
-    else:
-        slider_frame_idxs = frame_idxs
-
-    # limites campo ABC
-    vmax = float(np.max(np.abs([a, b, c])))
-    axis_lim_abc = max(1.0, 2.8 * vmax)
-
-    # resultantes
-    rxt, ryt = resultant_xy_series(a, b, c)
-    rx1, ry1 = resultant_xy_series(seq_data["a1"], seq_data["b1"], seq_data["c1"])
-    rx2, ry2 = resultant_xy_series(seq_data["a2"], seq_data["b2"], seq_data["c2"])
-    rx0, ry0 = resultant_xy_series(seq_data["a0"], seq_data["b0"], seq_data["c0"])
-
-    # limite comum das sequências
-    seq_lim = max(1.0, 1.2 * float(np.max(np.abs([rx1, ry1, rx2, ry2, rx0, ry0]))))
-
-    # Figura 3x2 (mais limpa):
-    # (1,1) ABC tempo | (1,2) Campo ABC
-    # (2,1) Clarke    | (2,2) Plano αβ
-    # (3,1) Campo Seq (V1,V2,V0) | (3,2) barras RMS
-    fig = make_subplots(
-        rows=3, cols=2,
-        subplot_titles=(
-            "ABC (tempo)",
-            "Campo ABC (XY) — rastro resultante",
-            f"Clarke αβ (tempo) – {clarke_label}",
-            "Plano αβ — rastro + vetor",
-            "Campo das Sequências Simétricas (V1 + V2 + V0) — rastros",
-            "|V0|, |V1|, |V2| (RMS)"
-        ),
-        horizontal_spacing=0.10,
-        vertical_spacing=0.14,
-    )
-
-    # =====================================================
-    # TRACES ESTÁTICOS (não mudam por frame)
-    # =====================================================
-    # 0..2 ABC tempo
-    fig.add_trace(go.Scatter(x=t, y=a, mode="lines", name="A"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=b, mode="lines", name="B"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=c, mode="lines", name="C"), row=1, col=1)
-
-    # 3..4 Clarke tempo
-    fig.add_trace(go.Scatter(x=t, y=alpha, mode="lines", name="α"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=beta,  mode="lines", name="β"), row=2, col=1)
-
-    # 5 plano αβ traj (linha base)
-    fig.add_trace(go.Scatter(x=alpha, y=beta, mode="lines", name="traj αβ", line=dict(width=2)),
-                  row=2, col=2)
-
-    # 6 origem αβ
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", name="origem", marker=dict(size=7)),
-                  row=2, col=2)
-
-    # 7 barras RMS
-    fig.add_trace(go.Bar(
-        x=["|V1|", "|V2|", "|V0|"],
-        y=[float(np.abs(V1)), float(np.abs(V2)), float(np.abs(V0))],
-        name="RMS",
-        marker=dict(line=dict(width=0))
-    ), row=3, col=2)
-
-    # =====================================================
-    # TRACES DINÂMICOS (animados)
-    # =====================================================
-    i0 = frame_idxs[0]
-
-    # 8..10 markers ABC @t
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[a[i0]], mode="markers", name="A@t", marker=dict(size=10)),
-                  row=1, col=1)
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[b[i0]], mode="markers", name="B@t", marker=dict(size=10)),
-                  row=1, col=1)
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[c[i0]], mode="markers", name="C@t", marker=dict(size=10)),
-                  row=1, col=1)
-
-    # Campo ABC: vetores e rastro
-    vecs0, _ = abc_vectors_xy(a[i0], b[i0], c[i0])
-    colors = ["#FF5555", "#55FF55", "#5555FF"]
-    names = ["A", "B", "C"]
-
-    # 11..13 vetores A,B,C
-    for (vx, vy), colr, nm in zip(vecs0, colors, names):
-        fig.add_trace(go.Scatter(
-            x=[0, vx], y=[0, vy],
-            mode="lines+markers", name=nm,
-            line=dict(width=4, color=colr),
-            marker=dict(size=7)
-        ), row=1, col=2)
-
-    # 14 resultante total
-    fig.add_trace(go.Scatter(
-        x=[0, rxt[i0]], y=[0, ryt[i0]],
-        mode="lines+markers", name="Resultante",
-        line=dict(width=5, color="white"),
-        marker=dict(size=9)
-    ), row=1, col=2)
-
-    # 15 rastro ABC
-    fig.add_trace(go.Scatter(
-        x=rxt[:i0+1:traj_stride], y=ryt[:i0+1:traj_stride],
-        mode="lines", name="rastro ABC",
-        line=dict(width=2, color="rgba(240,246,252,0.35)")
-    ), row=1, col=2)
-
-    # 16..17 markers Clarke @t
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[alpha[i0]], mode="markers", name="α@t", marker=dict(size=9)),
-                  row=2, col=1)
-    fig.add_trace(go.Scatter(x=[t[i0]], y=[beta[i0]],  mode="markers", name="β@t", marker=dict(size=9)),
-                  row=2, col=1)
-
-    # 18 ponto αβ atual
-    fig.add_trace(go.Scatter(x=[alpha[i0]], y=[beta[i0]], mode="markers", name="ponto αβ", marker=dict(size=11)),
-                  row=2, col=2)
-
-    # 19 vetor αβ
-    fig.add_trace(go.Scatter(x=[0, alpha[i0]], y=[0, beta[i0]], mode="lines", name="vetor αβ",
-                             line=dict(width=3, dash="dot", color="rgba(255,215,0,0.9)")),
-                  row=2, col=2)
-
-    # ======= CAMPO SEQUÊNCIAS UNIFICADO (V1+V2+V0) =======
-    # Cores didáticas
-    col_v1 = "rgba(88,166,255,0.95)"     # azul
-    col_v2 = "rgba(170,170,170,0.95)"    # cinza
-    col_v0 = "rgba(255,215,0,0.95)"      # amarelo
-
-    # 20 rastro V1
-    fig.add_trace(go.Scatter(
-        x=rx1[:i0+1:traj_stride], y=ry1[:i0+1:traj_stride],
-        mode="lines", name="rastro V1",
-        line=dict(width=2, color="rgba(88,166,255,0.35)")
-    ), row=3, col=1)
-
-    # 21 vetor V1
-    fig.add_trace(go.Scatter(
-        x=[0, rx1[i0]], y=[0, ry1[i0]],
-        mode="lines+markers", name="V1 (positiva)",
-        line=dict(width=4, color=col_v1),
-        marker=dict(size=8)
-    ), row=3, col=1)
-
-    # 22 rastro V2
-    fig.add_trace(go.Scatter(
-        x=rx2[:i0+1:traj_stride], y=ry2[:i0+1:traj_stride],
-        mode="lines", name="rastro V2",
-        line=dict(width=2, color="rgba(170,170,170,0.35)", dash="dash")
-    ), row=3, col=1)
-
-    # 23 vetor V2
-    fig.add_trace(go.Scatter(
-        x=[0, rx2[i0]], y=[0, ry2[i0]],
-        mode="lines+markers", name="V2 (negativa)",
-        line=dict(width=4, color=col_v2, dash="dash"),
-        marker=dict(size=8)
-    ), row=3, col=1)
-
-    # 24 rastro V0
-    fig.add_trace(go.Scatter(
-        x=rx0[:i0+1:traj_stride], y=ry0[:i0+1:traj_stride],
-        mode="lines", name="rastro V0",
-        line=dict(width=2, color="rgba(255,215,0,0.35)", dash="dot")
-    ), row=3, col=1)
-
-    # 25 vetor V0
-    fig.add_trace(go.Scatter(
-        x=[0, rx0[i0]], y=[0, ry0[i0]],
-        mode="lines+markers", name="V0 (zero)",
-        line=dict(width=4, color=col_v0, dash="dot"),
-        marker=dict(size=8)
-    ), row=3, col=1)
-
-    # visibilidade sequências
-    for tid in [20, 21, 22, 23, 24, 25]:
-        fig.data[tid].visible = True if show_seq else "legendonly"
-
-    # traces dinâmicos = 8..25
-    dynamic_trace_idxs = list(range(8, 26))
-
-    # =====================================================
-    # FRAMES
-    # =====================================================
-    frames = []
-    for k in frame_idxs:
-        vecs, _ = abc_vectors_xy(a[k], b[k], c[k])
-
-        # rastros subamostrados
-        tx = rxt[:k+1:traj_stride]; ty = ryt[:k+1:traj_stride]
-        t1x = rx1[:k+1:traj_stride]; t1y = ry1[:k+1:traj_stride]
-        t2x = rx2[:k+1:traj_stride]; t2y = ry2[:k+1:traj_stride]
-        t0x = rx0[:k+1:traj_stride]; t0y = ry0[:k+1:traj_stride]
-
-        frame_data = []
-
-        # 8..10 markers ABC @t
-        frame_data.append(go.Scatter(x=[t[k]], y=[a[k]]))
-        frame_data.append(go.Scatter(x=[t[k]], y=[b[k]]))
-        frame_data.append(go.Scatter(x=[t[k]], y=[c[k]]))
-
-        # 11..13 vetores A,B,C
-        for (vx, vy) in vecs:
-            frame_data.append(go.Scatter(x=[0, vx], y=[0, vy]))
-
-        # 14 resultante total
-        frame_data.append(go.Scatter(x=[0, rxt[k]], y=[0, ryt[k]]))
-
-        # 15 rastro ABC
-        frame_data.append(go.Scatter(x=tx, y=ty))
-
-        # 16..17 markers Clarke @t
-        frame_data.append(go.Scatter(x=[t[k]], y=[alpha[k]]))
-        frame_data.append(go.Scatter(x=[t[k]], y=[beta[k]]))
-
-        # 18 ponto αβ atual
-        frame_data.append(go.Scatter(x=[alpha[k]], y=[beta[k]]))
-
-        # 19 vetor αβ
-        frame_data.append(go.Scatter(x=[0, alpha[k]], y=[0, beta[k]]))
-
-        # 20 rastro V1 + 21 vetor V1
-        frame_data.append(go.Scatter(x=t1x, y=t1y))
-        frame_data.append(go.Scatter(x=[0, rx1[k]], y=[0, ry1[k]]))
-
-        # 22 rastro V2 + 23 vetor V2
-        frame_data.append(go.Scatter(x=t2x, y=t2y))
-        frame_data.append(go.Scatter(x=[0, rx2[k]], y=[0, ry2[k]]))
-
-        # 24 rastro V0 + 25 vetor V0
-        frame_data.append(go.Scatter(x=t0x, y=t0y))
-        frame_data.append(go.Scatter(x=[0, rx0[k]], y=[0, ry0[k]]))
-
-        frames.append(go.Frame(data=frame_data, name=str(k), traces=dynamic_trace_idxs))
-
-    fig.frames = frames
-
-    # =====================================================
-    # SLIDER
-    # =====================================================
-    slider_steps = []
-    for k in slider_frame_idxs:
-        slider_steps.append(dict(
-            method="animate",
-            args=[[str(k)], {
-                "mode": "immediate",
-                "frame": {"duration": 0, "redraw": False},
-                "transition": {"duration": 0}
-            }],
-            label=""  # sem label = sem sobreposição
-        ))
-
-    # =====================================================
-    # LAYOUT / ESTILO
-    # =====================================================
-    fig.update_layout(
-        height=980,
-        margin=dict(l=18, r=18, t=95, b=140),
-        paper_bgcolor=PAPER_BG,
-        plot_bgcolor=PLOT_BG,
-        font=dict(color=FONT_CLR, size=13),
-
-        legend=dict(
-            orientation="h",
-            y=1.02, x=1,
-            xanchor="right", yanchor="bottom",
-            font=dict(color=LEG_CLR)
-        ),
-
-        updatemenus=[dict(
-            type="buttons",
-            direction="left",
-            x=0.0, y=1.14,
-            xanchor="left",
-            yanchor="top",
-            showactive=True,
-            bgcolor=BTN_BG,
-            bordercolor=BTN_BRD,
-            borderwidth=1,
-            pad=dict(r=8, t=6, l=8, b=6),
-            font=dict(color=FONT_CLR, size=14),
-            buttons=[
-                dict(
-                    label="▶ Play",
-                    method="animate",
-                    args=[None, {
-                        "frame": {"duration": 0, "redraw": False},
-                        "transition": {"duration": 0},
-                        "fromcurrent": True,
-                        "mode": "immediate"
-                    }]
-                ),
-                dict(
-                    label="⏸ Pause",
-                    method="animate",
-                    args=[[None], {
-                        "frame": {"duration": 0, "redraw": False},
-                        "transition": {"duration": 0},
-                        "mode": "immediate"
-                    }]
-                ),
-            ]
-        )],
-
-        sliders=[dict(
-            x=0.0, y=-0.08, len=1.0,
-            pad=dict(t=10, b=0),
-            currentvalue=dict(prefix="t = ", suffix=" s", font=dict(size=14, color=FONT_CLR), visible=True),
-            bgcolor=SL_BG,
-            bordercolor=SL_BRD,
-            borderwidth=1,
-            steps=slider_steps
-        )],
-    )
-
-    fig.update_xaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
-    fig.update_yaxes(showgrid=True, gridcolor=GRID_CLR, zeroline=True, zerolinecolor=ZERO_CLR)
-
-    # ABC tempo
-    fig.update_xaxes(title_text="Tempo (s)", row=1, col=1)
-    fig.update_yaxes(title_text="Amplitude", row=1, col=1)
-
-    # Campo ABC
-    fig.update_xaxes(range=[-axis_lim_abc, axis_lim_abc], title_text="X", row=1, col=2)
-    fig.update_yaxes(range=[-axis_lim_abc, axis_lim_abc], title_text="Y", row=1, col=2)
-    fig.update_yaxes(scaleanchor="x2", scaleratio=1, row=1, col=2)
-
-    # Clarke tempo
-    fig.update_xaxes(title_text="Tempo (s)", row=2, col=1)
-    fig.update_yaxes(title_text="Amplitude", row=2, col=1)
-
-    # Plano αβ
-    ab_lim = max(1.0, 1.1 * float(np.max(np.sqrt(alpha**2 + beta**2))))
-    fig.update_xaxes(range=[-ab_lim, ab_lim], title_text="α", row=2, col=2)
-    fig.update_yaxes(range=[-ab_lim, ab_lim], title_text="β", row=2, col=2)
-    fig.update_yaxes(scaleanchor="x4", scaleratio=1, row=2, col=2)
-
-    # Campo Sequências (V1+V2+V0)
-    fig.update_xaxes(range=[-seq_lim, seq_lim], title_text="X", row=3, col=1)
-    fig.update_yaxes(range=[-seq_lim, seq_lim], title_text="Y", row=3, col=1)
-    fig.update_yaxes(scaleanchor="x5", scaleratio=1, row=3, col=1)
-
-    # barras
-    fig.update_yaxes(title_text="RMS", row=3, col=2)
-
-    return fig
-
-
-# =========================================================
-# UI
-# =========================================================
-st.markdown("## ⚡ IEEE 34 Barras — V6 (Campos + Rastros + Sequências)")
-st.caption("✅ V0/V1/V2 no mesmo campo XY • Rastros separados • Upload múltiplo • Slider limpo • Play/Pause dark")
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-with st.sidebar:
-    st.markdown("## ⚙️ Controles")
-
-    st.markdown("### 📂 Arquivos .mat")
-    uploaded = st.file_uploader(
-        "Envie um ou vários arquivos .mat",
-        type=["mat"],
-        accept_multiple_files=True
-    )
-    if not uploaded:
-        st.info("Envie arquivos .mat para começar.")
-        st.stop()
-
-    mats = {}
-    errors = []
-    for uf in uploaded:
-        try:
-            mats[uf.name] = loadmat(io.BytesIO(uf.getvalue()), squeeze_me=False, struct_as_record=False)
-        except Exception as e:
-            errors.append((uf.name, str(e)))
-
-    if errors:
-        st.warning("Alguns arquivos falharam ao carregar:")
-        for name, err in errors:
-            st.write(f"- {name}: {err}")
-
-    if not mats:
-        st.error("Nenhum arquivo válido foi carregado.")
-        st.stop()
-
-    file_names = sorted(mats.keys())
-    selected_file = st.selectbox("Arquivo ativo", file_names, format_func=lambda x: f"📄 {x}")
-    mat = mats[selected_file]
-
-    st.divider()
-    st.markdown("### 📍 Sinal")
-    points = [
-        'I_800','V_800','I_T2F','V_T2F',
-        'I_818','V_818','I_820','V_820','I_822','V_822'
-    ]
-    point = st.selectbox("Ponto", points, index=0)
-
-    remove_mean = st.checkbox("Remover offset (DC)", value=True)
-
-    clarke_mode = st.radio(
-        "Clarke",
-        ["Power Invariant (√2/3)", "Amplitude Invariant (2/3)"],
-        horizontal=True
-    )
-    clarke_mode_key = "power" if "Power" in clarke_mode else "amp"
-
-    st.divider()
-    st.markdown("### 🔁 Componentes Simétricas (V0/V1/V2)")
-    show_seq = st.checkbox("Mostrar campo V0/V1/V2", value=True)
-    seq_f0 = st.number_input("f0 p/ fasor (Hz)", value=60.0, min_value=1.0, step=1.0)
-    seq_window = st.selectbox("Janela p/ fasor", ["hann", "rect"], index=0)
-
-    st.divider()
-    st.markdown("### 🎞️ Animação / Performance")
-    frame_step = st.slider("frame_step (↓ mais suave)", 1, 60, 6, 1)
-    traj_stride = st.slider("traj_stride (↓ rastro mais denso)", 1, 20, 3, 1)
-    st.caption("Se travar: aumente frame_step e traj_stride.")
-
-    st.divider()
-    st.markdown("### 📊 FFT / THD")
-    show_fft = st.checkbox("Ativar FFT/THD", value=False)
-    if show_fft:
-        window_type = st.selectbox("Janela FFT", ["hann", "rect"], index=0)
-        f_fund = st.number_input("Fundamental THD (Hz)", value=60.0, min_value=1.0, step=1.0)
-        h_max = st.slider("Máx harmônica THD", 5, 60, 25, 1)
-        tol_hz = st.number_input("Tolerância THD (Hz)", value=1.0, min_value=0.1, step=0.1)
-        fft_xmax = st.number_input("Limite X FFT (Hz)", value=float(h_max)*float(f_fund) + 10.0, min_value=10.0, step=10.0)
-
-
-# =========================================================
-# LOAD SIGNAL
-# =========================================================
-m1 = extract_m1_location(mat)
-t, x = extract_ts_from_mat(mat, point)
-
-if t is None or x is None:
-    st.error(f"Não encontrei `ts_{point}.Time/Data` dentro de `ts` no arquivo `{selected_file}`.")
-    st.stop()
-
-t = np.asarray(t).squeeze()
-
-if not (isinstance(x, np.ndarray) and x.ndim == 2 and x.shape[1] >= 3):
-    st.error(f"Esta versão exige sinal trifásico N×3. Recebi x.shape={getattr(x, 'shape', None)}.")
-    st.stop()
-
-a, b, c = x[:, 0], x[:, 1], x[:, 2]
-
-if remove_mean:
-    a = a - np.mean(a)
-    b = b - np.mean(b)
-    c = c - np.mean(c)
-
-dt = np.diff(t)
-fs = 1.0 / float(np.mean(dt)) if len(dt) > 0 else 0.0
-
-alpha, beta = clarke_transform(a, b, c, mode=clarke_mode_key)
-
-
-# =========================================================
-# SEQUÊNCIAS (fasores RMS + reconstrução fundamental)
-# =========================================================
-Va = phasor_at_f0(a, t, f0=float(seq_f0), window=seq_window, remove_mean=False)
-Vb = phasor_at_f0(b, t, f0=float(seq_f0), window=seq_window, remove_mean=False)
-Vc = phasor_at_f0(c, t, f0=float(seq_f0), window=seq_window, remove_mean=False)
-
-V0, V1, V2 = symmetrical_components(Va, Vb, Vc)
-
-Va0, Vb0, Vc0 = inv_symmetrical_components(V0, 0, 0)
-Va1, Vb1, Vc1 = inv_symmetrical_components(0, V1, 0)
-Va2, Vb2, Vc2 = inv_symmetrical_components(0, 0, V2)
-
-a0 = synth_from_phasor(Va0, t, seq_f0)
-b0 = synth_from_phasor(Vb0, t, seq_f0)
-c0 = synth_from_phasor(Vc0, t, seq_f0)
-
-a1 = synth_from_phasor(Va1, t, seq_f0)
-b1 = synth_from_phasor(Vb1, t, seq_f0)
-c1 = synth_from_phasor(Vc1, t, seq_f0)
-
-a2 = synth_from_phasor(Va2, t, seq_f0)
-b2 = synth_from_phasor(Vb2, t, seq_f0)
-c2 = synth_from_phasor(Vc2, t, seq_f0)
-
-seq_data = {
-    "a0": a0, "b0": b0, "c0": c0,
-    "a1": a1, "b1": b1, "c1": c1,
-    "a2": a2, "b2": b2, "c2": c2
+st.set_page_config(page_title="T2F Master Suite", layout="wide", page_icon="⚡")
+
+CURVES = {
+    "IEC Standard Inverse":  (0.14, 0.0, 0.02),
+    "IEC Very Inverse":      (13.5, 0.0, 1.0),
+    "IEC Extremely Inverse": (80.0, 0.0, 2.0),
+    "IEC Long Time Inverse": (120.0, 0.0, 1.0),
+    "IEEE Moderately Inv":   (0.0515, 0.114, 0.02),
+    "IEEE Very Inverse":     (19.61, 0.491, 2.0),
+    "IEEE Extremely Inv":    (28.2, 0.1217, 2.0)
 }
 
+THEME = {
+    "A": "#00ffff", "B": "#ff3333", "C": "#00ff00",
+    "V1": "#4facfe", "V2": "#f093fb", "V0": "#fcc203",
+    "Ref": "#ff6600",
+    "bg": "#1e1e1e", "grid": "#444"
+}
 
 # =========================================================
-# MAIN VIEW
+# 🧠 2. FUNÇÕES DE CÁLCULO E CACHE
 # =========================================================
-st.markdown(
-    f"### 🧪 Caso selecionado\n"
-    f"- **Arquivo:** `{selected_file}`\n"
-    f"- **Ponto:** `{point}`\n"
-    f"- **m1:** `{m1}`\n"
-    f"- **fs estimada:** `{fs:.2f} Hz`\n"
-    f"- **N:** `{len(t)}` | **frame_step:** `{frame_step}` | **traj_stride:** `{traj_stride}`"
-)
+@st.cache_data
+def get_cached_tcc_curve(pickup, dial, curve_name):
+    i_plot = np.logspace(np.log10(0.1), np.log10(30000), 500)
+    if curve_name not in CURVES: A, B, p = CURVES["IEC Standard Inverse"]
+    else: A, B, p = CURVES[curve_name]
+    
+    safe_Ip = pickup if pickup > 0 else 0.001
+    M = i_plot / safe_Ip
+    t_plot = np.full_like(i_plot, 2000.0, dtype=float)
+    mask = M > 1.001
+    if np.any(mask):
+        denom = np.power(M[mask], p) - 1
+        denom[denom == 0] = 1e-9
+        t_plot[mask] = dial * ( (A / denom) + B )
+    return i_plot, t_plot
 
-st.markdown("#### 📌 Componentes Simétricas (RMS) na fundamental")
-st.table({
-    "Componente": ["V1 (Positiva)", "V2 (Negativa)", "V0 (Zero)"],
-    "|V| RMS": [float(np.abs(V1)), float(np.abs(V2)), float(np.abs(V0))],
-    "∠ (deg)": [float(np.angle(V1, deg=True)), float(np.angle(V2, deg=True)), float(np.angle(V0, deg=True))]
-})
+def calculate_tcc_single(I_val, Ip, TD, curve_name):
+    if I_val is None: return 2000.0
+    if curve_name not in CURVES: A, B, p = CURVES["IEC Standard Inverse"]
+    else: A, B, p = CURVES[curve_name]
+    M = I_val / (Ip if Ip > 0 else 0.001)
+    if M <= 1.001: return 2000.0
+    val = TD * ((A / ((M**p)-1)) + B)
+    return min(val, 1000.0)
 
-fig = build_animated_figure(
-    t=t, a=a, b=b, c=c,
-    alpha=alpha, beta=beta,
-    seq_data=seq_data,
-    V0=V0, V1=V1, V2=V2,
-    show_seq=show_seq,
-    frame_step=frame_step,
-    traj_stride=traj_stride,
-    clarke_label=("power" if clarke_mode_key == "power" else "amp")
-)
+def parse_mat_file(mat_data):
+    parsed = {}
+    t = mat_data.get('t') if 't' in mat_data else mat_data.get('time')
+    if t is None: return None
+    parsed['t'] = t.flatten()
+    for key in mat_data.keys():
+        if key.startswith('__') or key in ['t', 'time', 'm1']: continue
+        base = key
+        tipo = 'raw'
+        if key.endswith('_rms'): base = key[:-4]; tipo = 'rms'
+        elif key.endswith('_phasor'): base = key[:-7]; tipo = 'phasor'
+        elif key.endswith('_seq'): base = key[:-4]; tipo = 'seq'
+        elif key.endswith('_clarke'): base = key[:-7]; tipo = 'clarke'
+        elif key.endswith('_raw'): base = key[:-4]; tipo = 'raw'
+        if base not in parsed: parsed[base] = {}
+        parsed[base][tipo] = mat_data[key]
+    return parsed
 
-st.plotly_chart(fig, use_container_width=True)
-
+@st.cache_data
+def get_downsampled_data(t, signal, target_points=1500):
+    if signal is None: return t, signal
+    n = len(t)
+    if n <= target_points: return t, signal
+    step = int(n / target_points)
+    return t[::step], signal[::step]
 
 # =========================================================
-# FFT / THD (optional)
+# 📊 3. PLOTS ESTÁTICOS (PARA O PLAYER PYTHON - ABAS 1 e 3)
 # =========================================================
-if show_fft:
+def create_waveform_fig(t, sig_rms, title, y_label, time_mark, ref_sig=None, ref_t=None):
+    fig = go.Figure()
+    t_opt, sig_opt = get_downsampled_data(t, sig_rms)
+    
+    fig.add_trace(go.Scatter(x=t_opt, y=sig_opt[:,0], name='A', line=dict(color=THEME['A'], width=1.5)))
+    fig.add_trace(go.Scatter(x=t_opt, y=sig_opt[:,1], name='B', line=dict(color=THEME['B'], width=1.5)))
+    fig.add_trace(go.Scatter(x=t_opt, y=sig_opt[:,2], name='C', line=dict(color=THEME['C'], width=1.5)))
+    
+    if ref_sig is not None and ref_t is not None:
+        tr_opt, sigr_opt = get_downsampled_data(ref_t, ref_sig)
+        fig.add_trace(go.Scatter(x=tr_opt, y=sigr_opt[:,0], name='Ref A', line=dict(color=THEME['A'], dash='dash', width=1)))
+        fig.add_trace(go.Scatter(x=tr_opt, y=sigr_opt[:,1], name='Ref B', line=dict(color=THEME['B'], dash='dash', width=1)))
+        fig.add_trace(go.Scatter(x=tr_opt, y=sigr_opt[:,2], name='Ref C', line=dict(color=THEME['C'], dash='dash', width=1)))
+
+    fig.add_vline(x=time_mark, line_width=2, line_color="white")
+    fig.update_layout(title=title, yaxis_title=y_label, height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
+    return fig
+
+def create_phasor_fig(phasors, rms_vals, title, ref_phasors=None, ref_rms=None):
+    fig = go.Figure()
+    def add_arrows(ph_vals, mag_vals, suffix="", style_dash=None):
+        cols = [THEME['A'], THEME['B'], THEME['C']]
+        names = ['A', 'B', 'C']
+        for k in range(3):
+            ang_rad = np.angle(ph_vals[k])
+            r = mag_vals[k]
+            x_end = r * np.cos(ang_rad); y_end = r * np.sin(ang_rad)
+            fig.add_trace(go.Scatter(x=[0, x_end], y=[0, y_end], mode='lines+markers',
+                marker=dict(size=[0, 8], symbol='arrow-bar-up', angle=0),
+                line=dict(color=cols[k], width=3, dash=style_dash), name=f"{names[k]}{suffix}", showlegend=False))
+
+    if phasors is not None: add_arrows(phasors, rms_vals)
+    if ref_phasors is not None: add_arrows(ref_phasors, ref_rms, " (Ref)", "dot")
+
+    max_r = max(np.max(rms_vals), np.max(ref_rms) if ref_rms is not None else 0) * 1.1
+    if max_r == 0: max_r = 1
+
+    fig.update_layout(title=title, 
+        xaxis=dict(range=[-max_r, max_r], showgrid=True, zeroline=True),
+        yaxis=dict(range=[-max_r, max_r], showgrid=True, zeroline=True, scaleanchor="x", scaleratio=1),
+        height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
+    return fig
+
+def create_seq_fig(seq_vals, title, ref_seq=None):
+    x = ['Pos (+)', 'Neg (-)', 'Zero (0)']
+    y = [abs(seq_vals[1]), abs(seq_vals[2]), abs(seq_vals[0])]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=x, y=y, name="Atual", marker_color=[THEME['V1'], THEME['V2'], THEME['V0']]))
+    if ref_seq is not None:
+         y_ref = [abs(ref_seq[1]), abs(ref_seq[2]), abs(ref_seq[0])]
+         fig.add_trace(go.Bar(x=x, y=y_ref, name="Ref", opacity=0.5, marker_color=[THEME['V1'], THEME['V2'], THEME['V0']], marker_pattern_shape="/"))
+    fig.update_layout(title=title, height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
+    return fig
+
+# =========================================================
+# 🎬 4. ANIMAÇÃO FLUIDA NATIVA (PARA ABA 2)
+# =========================================================
+@st.cache_data
+def create_fluid_animation(t_vec, i_rms, i_clk, pickup, dial, curve_type):
+    # Gera a animação pesada apenas UMA vez e guarda no cache
+    total_points = len(t_vec)
+    n_frames = 150 
+    step = max(1, int(total_points / n_frames))
+    indices = range(0, total_points, step)
+    
+    fig = make_subplots(rows=2, cols=1, row_heights=[0.6, 0.4], vertical_spacing=0.15,
+                        subplot_titles=(f"Curva TCC ({curve_type})", "Plano Clarke"))
+
+    cx, cy = get_cached_tcc_curve(pickup, dial, curve_type)
+    fig.add_trace(go.Scatter(x=cx, y=cy, mode='lines', line=dict(color='yellow', width=3), name="Curva TCC", hoverinfo='skip'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[0.1]*3, y=[0.1]*3, mode='markers+text',
+        marker=dict(size=15, color=[THEME['A'], THEME['B'], THEME['C']], symbol=['circle', 'triangle-up', 'square'], line=dict(width=2, color='white')),
+        text=["Ia", "Ib", "Ic"], textposition="top right", name="Medição"), row=1, col=1)
+    fig.add_vline(x=pickup, line_width=1, line_dash="dash", line_color="gray", row=1, col=1)
+
+    max_clk = np.max(np.abs(i_clk)) if i_clk is not None else 10
+    limit = max(10, max_clk * 1.1)
+    if i_clk is not None:
+        fig.add_trace(go.Scatter(x=[0], y=[0], mode='markers',
+            marker=dict(size=14, color=THEME['V1'], line=dict(width=2, color='white')), name="Clarke"), row=2, col=1)
+
+    frames = []
+    for k in indices:
+        vals = i_rms[k] if i_rms is not None else [0.1]*3
+        tcc_x = [max(v, 0.101) for v in vals]
+        tcc_y = [min(calculate_tcc_single(v, pickup, dial, curve_type), 1000) for v in vals]
+        
+        tcc_text = []
+        for v, t_act in zip(vals, tcc_y):
+            txt = ""
+            if v > 0.5: 
+                txt = f"{v:.1f}A"
+                if v > pickup: txt += f"<br>{t_act:.2f}s"
+            tcc_text.append(txt)
+
+        clk_x = [i_clk[k, 0]] if i_clk is not None else [0]
+        clk_y = [i_clk[k, 1]] if i_clk is not None else [0]
+        
+        frames.append(go.Frame(data=[
+            go.Scatter(x=cx, y=cy), 
+            go.Scatter(x=tcc_x, y=tcc_y, text=tcc_text),
+            go.Scatter(x=clk_x, y=clk_y)
+        ], name=f"{t_vec[k]:.3f}"))
+
+    fig.frames = frames
+    fig.update_layout(template="plotly_dark", height=750, margin=dict(t=40, b=40),
+        xaxis1=dict(type="log", range=[np.log10(0.1), np.log10(30000)], title="Corrente (A)", showgrid=True, gridcolor=THEME['grid']),
+        yaxis1=dict(type="log", range=[np.log10(0.01), np.log10(1000)], title="Tempo (s)", showgrid=True, gridcolor=THEME['grid']),
+        xaxis2=dict(range=[-limit, limit], title="Alpha", showgrid=True, gridcolor=THEME['grid'], scaleanchor="y2", scaleratio=1),
+        yaxis2=dict(range=[-limit, limit], title="Beta", showgrid=True, gridcolor=THEME['grid']),
+        updatemenus=[dict(type="buttons", showactive=False, y=1.05, x=1.0, xanchor="right",
+            buttons=[dict(label="▶ Play", method="animate", args=[None, dict(frame=dict(duration=20, redraw=True), fromcurrent=True, mode="immediate")]),
+                     dict(label="⏸ Pause", method="animate", args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))])])],
+        sliders=[dict(steps=[dict(method='animate', args=[[f.name], dict(mode='immediate', frame=dict(duration=0, redraw=True))], label=f.name) for f in frames],
+            active=0, y=0, x=0.1, len=0.9, currentvalue=dict(prefix="Tempo: ", visible=True), pad=dict(t=20))]
+    )
+    return fig
+
+# =========================================================
+# 🚀 5. CONTROLES E STATE
+# =========================================================
+if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
+if 'ref_data' not in st.session_state: st.session_state['ref_data'] = None
+if 'idx' not in st.session_state: st.session_state['idx'] = 0
+if 'playing' not in st.session_state: st.session_state['playing'] = False
+
+with st.sidebar:
+    st.header("⚡ T2F Master")
+    uploaded_files = st.file_uploader("Arquivos .mat", type=['mat'], accept_multiple_files=True)
+    if uploaded_files:
+        for f in uploaded_files:
+            if f.name not in st.session_state['data_store']:
+                try:
+                    raw = sio.loadmat(f, squeeze_me=True)
+                    st.session_state['data_store'][f.name] = parse_mat_file(raw)
+                except: pass
+
+    opts = list(st.session_state['data_store'].keys())
+    selected_file = st.selectbox("Arquivo", opts) if opts else None
+    
+    # Referência
+    current_data = st.session_state['data_store'].get(selected_file)
+    c1, c2 = st.columns(2)
+    if c1.button("Fixar Ref.") and current_data: st.session_state['ref_data'] = current_data
+    if c2.button("Limpar Ref."): st.session_state['ref_data'] = None
+
+    # Sinais
+    available_keys = []
+    if current_data:
+        available_keys = [k for k in current_data.keys() if k != 't']
+        available_keys.sort()
+    
+    def_v = next((k for k in available_keys if 'V' in k), None)
+    def_i = next((k for k in available_keys if 'I' in k), None)
+    sel_v = st.selectbox("Tensão", available_keys, index=available_keys.index(def_v) if def_v else 0) if available_keys else None
+    sel_i = st.selectbox("Corrente", available_keys, index=available_keys.index(def_i) if def_i else 0) if available_keys else None
+
+    # --- PLAYER (CONTROLA ABAS 1 E 3) ---
     st.divider()
-    st.markdown("## 📊 FFT e THD")
+    st.markdown("#### ⏯️ Player (Abas 1 e 3)")
+    
+    col_p1, col_p2, col_p3 = st.columns(3)
+    if col_p1.button("▶", help="Play"):
+        st.session_state['playing'] = True
+        st.rerun()
+    if col_p2.button("⏸", help="Pause"):
+        st.session_state['playing'] = False
+        st.rerun()
+    if col_p3.button("⏹", help="Reset"):
+        st.session_state['playing'] = False
+        st.session_state['idx'] = 0
+        st.rerun()
+        
+    t_max = len(current_data['t']) - 1 if current_data else 100
+    idx_val = st.slider("Tempo", 0, t_max, st.session_state['idx'], label_visibility="collapsed")
+    if idx_val != st.session_state['idx']:
+        st.session_state['idx'] = idx_val # Atualiza se o usuário mexer no slider
+    
+    speed_step = st.number_input("Velocidade (Step)", 1, 100, 2)
 
-    if fs <= 0 or len(a) < 8:
-        st.warning("FFT/THD ativados, mas fs inválida ou sinal curto.")
+    # Proteção
+    st.divider()
+    st.subheader("🛡️ Config. Proteção")
+    curve_type = st.selectbox("Curva", list(CURVES.keys()))
+    pickup = st.number_input("Pickup (A)", value=25.0)
+    dial = st.number_input("Dial", value=0.5)
+
+# --- CORPO PRINCIPAL ---
+if not current_data or not sel_v or not sel_i:
+    st.info("Carregue arquivos e selecione sinais.")
+    st.stop()
+
+# Dados e Índices
+t_vec = current_data['t']
+curr_idx = st.session_state['idx']
+time_curr = t_vec[curr_idx]
+
+v_data = current_data[sel_v]; i_data = current_data[sel_i]
+v_rms = v_data.get('rms'); i_rms = i_data.get('rms')
+i_clk = i_data.get('clarke')
+v_ph = v_data.get('phasor'); i_ph = i_data.get('phasor')
+v_seq = v_data.get('seq'); i_seq = i_data.get('seq')
+
+# Referência
+ref_v_rms, ref_i_rms, ref_t = None, None, None
+ref_v_ph, ref_i_ph, ref_v_seq, ref_i_seq = None, None, None, None
+if st.session_state['ref_data']:
+    rd = st.session_state['ref_data']; ref_t = rd['t']
+    ref_idx = min(curr_idx, len(ref_t)-1)
+    if sel_v in rd: ref_v_rms = rd[sel_v].get('rms'); ref_v_ph = rd[sel_v].get('phasor'); ref_v_seq = rd[sel_v].get('seq')
+    if sel_i in rd: ref_i_rms = rd[sel_i].get('rms'); ref_i_ph = rd[sel_i].get('phasor'); ref_i_seq = rd[sel_i].get('seq')
+
+# --- ABAS ---
+tab1, tab2, tab3 = st.tabs(["📊 Análise", "🛡️ Proteção (Fluida)", "🔁 Comparação"])
+
+# ABA 1: ANÁLISE (CONTROLADA PELO PLAYER PYTHON)
+with tab1:
+    st.markdown(f"**Tempo:** `{time_curr:.4f}s` (Use o player lateral)")
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(create_waveform_fig(t_vec, v_rms, "Tensão (RMS)", "V", time_curr), use_container_width=True)
+    c2.plotly_chart(create_waveform_fig(t_vec, i_rms, "Corrente (RMS)", "A", time_curr), use_container_width=True)
+    
+    val_v_ph = v_ph[curr_idx] if v_ph is not None else [0]*3
+    val_i_ph = i_ph[curr_idx] if i_ph is not None else [0]*3
+    val_v_now = v_rms[curr_idx] if v_rms is not None else [0]*3
+    val_i_now = i_rms[curr_idx] if i_rms is not None else [0]*3
+    
+    c3, c4 = st.columns(2)
+    c3.plotly_chart(create_phasor_fig(val_v_ph, val_v_now, "Fasores Tensão"), use_container_width=True)
+    c4.plotly_chart(create_phasor_fig(val_i_ph, val_i_now, "Fasores Corrente"), use_container_width=True)
+    
+    val_v_seq = v_seq[curr_idx] if v_seq is not None else [0]*3
+    val_i_seq = i_seq[curr_idx] if i_seq is not None else [0]*3
+    c5, c6 = st.columns(2)
+    c5.plotly_chart(create_seq_fig(val_v_seq, "Sequência Tensão"), use_container_width=True)
+    c6.plotly_chart(create_seq_fig(val_i_seq, "Sequência Corrente"), use_container_width=True)
+
+# ABA 2: PROTEÇÃO (ANIMAÇÃO FLUIDA NATIVA)
+with tab2:
+    st.caption("ℹ️ Esta aba usa um player interno independente para garantir 60 FPS.")
+    with st.spinner("Preparando animação fluida..."):
+        fig_anim = create_fluid_animation(t_vec, i_rms, i_clk, pickup, dial, curve_type)
+        st.plotly_chart(fig_anim, use_container_width=True)
+
+# ABA 3: COMPARAÇÃO (CONTROLADA PELO PLAYER PYTHON)
+with tab3:
+    st.markdown(f"**Tempo:** `{time_curr:.4f}s` (Use o player lateral)")
+    if st.session_state['ref_data'] is None:
+        st.warning("Defina uma Referência no painel lateral.")
     else:
-        freqs, Fa = compute_fft_rms(a, fs, window=window_type, remove_mean=False)
-        _, Fb = compute_fft_rms(b, fs, window=window_type, remove_mean=False)
-        _, Fc = compute_fft_rms(c, fs, window=window_type, remove_mean=False)
+        k1, k2 = st.columns(2)
+        k1.plotly_chart(create_waveform_fig(t_vec, v_rms, "Comp V", "V", time_curr, ref_v_rms, ref_t), use_container_width=True)
+        k2.plotly_chart(create_waveform_fig(t_vec, i_rms, "Comp I", "A", time_curr, ref_i_rms, ref_t), use_container_width=True)
+        
+        # Dados Ref
+        rvp = ref_v_ph[ref_idx] if ref_v_ph is not None else [0]*3
+        rip = ref_i_ph[ref_idx] if ref_i_ph is not None else [0]*3
+        rvn = ref_v_rms[ref_idx] if ref_v_rms is not None else [0]*3
+        rin = ref_i_rms[ref_idx] if ref_i_rms is not None else [0]*3
 
-        thd_a = compute_thd_percent(freqs, Fa, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-        thd_b = compute_thd_percent(freqs, Fb, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
-        thd_c = compute_thd_percent(freqs, Fc, f_fund=f_fund, h_max=h_max, tol_hz=tol_hz)
+        k3, k4 = st.columns(2)
+        k3.plotly_chart(create_phasor_fig(val_v_ph, val_v_now, "Comp Fasor V", rvp, rvn), use_container_width=True)
+        k4.plotly_chart(create_phasor_fig(val_i_ph, val_i_now, "Comp Fasor I", rip, rin), use_container_width=True)
+        
+        rvs = ref_v_seq[ref_idx] if ref_v_seq is not None else [0]*3
+        ris = ref_i_seq[ref_idx] if ref_i_seq is not None else [0]*3
+        k5, k6 = st.columns(2)
+        k5.plotly_chart(create_seq_fig(val_v_seq, "Comp Seq V", rvs), use_container_width=True)
+        k6.plotly_chart(create_seq_fig(val_i_seq, "Comp Seq I", ris), use_container_width=True)
 
-        c1, c2 = st.columns([1, 1])
-
-        with c1:
-            st.subheader("THD (%) por fase")
-            st.table({
-                "Fase": ["A", "B", "C"],
-                "THD (%)": [
-                    None if np.isnan(thd_a) else round(thd_a, 2),
-                    None if np.isnan(thd_b) else round(thd_b, 2),
-                    None if np.isnan(thd_c) else round(thd_c, 2),
-                ]
-            })
-
-        with c2:
-            fig_fft = go.Figure()
-            fig_fft.add_trace(go.Scatter(x=freqs, y=Fa, mode="lines", name="A"))
-            fig_fft.add_trace(go.Scatter(x=freqs, y=Fb, mode="lines", name="B"))
-            fig_fft.add_trace(go.Scatter(x=freqs, y=Fc, mode="lines", name="C"))
-            fig_fft.update_layout(
-                title=f"FFT RMS — janela {window_type}",
-                xaxis_title="Frequência (Hz)",
-                yaxis_title="Amplitude (RMS)",
-                height=380,
-                margin=dict(l=25, r=15, t=60, b=35),
-                paper_bgcolor=PAPER_BG,
-                plot_bgcolor=PLOT_BG,
-                font=dict(color=FONT_CLR),
-                legend=dict(orientation="h", y=1.02, x=1, xanchor="right", yanchor="bottom"),
-            )
-            fig_fft.update_xaxes(range=[0, float(fft_xmax)], showgrid=True, gridcolor=GRID_CLR,
-                                 zeroline=True, zerolinecolor=ZERO_CLR)
-            fig_fft.update_yaxes(showgrid=True, gridcolor=GRID_CLR,
-                                 zeroline=True, zerolinecolor=ZERO_CLR)
-            st.plotly_chart(fig_fft, use_container_width=True)
+# =========================================================
+# 🔄 LOOP DE ANIMAÇÃO DO PLAYER PYTHON
+# =========================================================
+if st.session_state['playing']:
+    if st.session_state['idx'] < len(t_vec) - 1:
+        st.session_state['idx'] += speed_step
+        st.rerun() # Atualiza a tela para o próximo frame
+    else:
+        st.session_state['playing'] = False
+        st.rerun()
