@@ -6,7 +6,6 @@ argon2-cffi-bindings
 arrow
 asttokens
 async-lru
-attrs
 audioop-lts
 av
 babel
