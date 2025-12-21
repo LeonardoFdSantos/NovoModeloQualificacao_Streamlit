@@ -1,406 +1,327 @@
-import io
-import os
-import numpy as np
-import pandas as pd
 import streamlit as st
+import numpy as np
+import scipy.io as sio
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.io import loadmat
-from scipy.signal import windows
-from sklearn.tree import DecisionTreeClassifier
 
 # =========================================================
-# CONFIGURAÇÃO VISUAL (TEMA DARK NEON)
+# ⚙️ 1. CONFIGURAÇÕES VISUAIS
 # =========================================================
-st.set_page_config(
-    page_title="PhD T2F Analysis - Pro",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Comparison Studio", layout="wide", page_icon="⚖️")
 
-# Paleta de Cores de Alto Contraste
 THEME = {
-    "bg": "#0e1117", 
-    "plot_bg": "#0e1117", 
-    "grid": "rgba(255,255,255,0.1)",
-    "text": "#e6edf3",
-    "A": "#00d4ff", # Ciano Neon
-    "B": "#ff4b4b", # Vermelho Neon
-    "C": "#5aff5a", # Verde Neon
-    "V1": "#29b5e8", 
-    "V2": "#e8299c", # Magenta
-    "V0": "#fcc203", # Amarelo Ouro
-    "vec": "#ffffff"
+    "A": "#00ffff", "B": "#ff3333", "C": "#00ff00", # Cores Sinais Atuais
+    "RA": "#008888", "RB": "#883333", "RC": "#008800", # Cores Referência (Mais escuras)
+    "V1": "#4facfe", "V2": "#f093fb", "V0": "#fcc203",
+    "grid": "#333"
 }
 
-ANGLES = np.deg2rad([0, 120, 240])
-DATASET_FILE = "dataset_faltas_t2f_final.csv"
+CURVES = {
+    "IEC Standard Inverse":  (0.14, 0.0, 0.02),
+    "IEC Very Inverse":      (13.5, 0.0, 1.0),
+    "IEC Extremely Inverse": (80.0, 0.0, 2.0),
+    "IEC Long Time Inverse": (120.0, 0.0, 1.0),
+    "IEEE Moderately Inv":   (0.0515, 0.114, 0.02),
+    "IEEE Very Inverse":     (19.61, 0.491, 2.0),
+    "IEEE Extremely Inv":    (28.2, 0.1217, 2.0)
+}
 
 # =========================================================
-# 1. TRATAMENTO DE DADOS (ROBUSTEZ)
+# 🧮 2. CÁLCULOS
 # =========================================================
-@st.cache_data(show_spinner=False)
-def load_mat_file(file_bytes):
-    try: return loadmat(io.BytesIO(file_bytes), squeeze_me=False, struct_as_record=False)
-    except Exception as e: return str(e)
+@st.cache_data
+def get_tcc_curve(pickup, dial, curve_name):
+    """Gera a linha estática da curva de proteção"""
+    i_plot = np.logspace(np.log10(0.1), np.log10(30000), 400)
+    if curve_name not in CURVES: params = CURVES["IEC Standard Inverse"]
+    else: params = CURVES[curve_name]
+    A, B, p = params
+    
+    safe_Ip = pickup if pickup > 0 else 0.001
+    M = i_plot / safe_Ip
+    t_plot = np.full_like(i_plot, 2000.0, dtype=float)
+    mask = M > 1.001
+    if np.any(mask):
+        denom = np.power(M[mask], p) - 1
+        denom[denom == 0] = 1e-9
+        t_plot[mask] = dial * ((A / denom) + B)
+    return i_plot, t_plot
 
-def safe_downsample(t, x, max_points=3000):
-    """
-    Reduz a densidade de pontos para visualização (Performance),
-    mas mantém a forma da onda. Evita travar o navegador.
-    """
-    if t is None or len(t) == 0: return [], []
-    if len(t) <= max_points: return t, x
-    
-    # Garante fator inteiro >= 1
-    factor = int(len(t) / max_points)
-    if factor < 1: factor = 1
-    
-    return t[::factor], x[::factor]
+def calc_trip_time(I, Ip, TD, curve_name):
+    """Calcula o tempo de atuação para um ponto específico"""
+    if curve_name not in CURVES: params = CURVES["IEC Standard Inverse"]
+    else: params = CURVES[curve_name]
+    A, B, p = params
+    M = I / (Ip if Ip > 0 else 0.001)
+    if M <= 1.001: return 1000.0
+    val = TD * ((A / ((M**p)-1)) + B)
+    return min(val, 1000.0)
 
-def extract_keys_safely(mat_data):
-    if 'ts' not in mat_data: return []
-    ts_struct = mat_data['ts']
-    if isinstance(ts_struct, np.ndarray) and ts_struct.size == 1: ts_struct = ts_struct.item()
+def parse_mat_file(mat_data):
+    """Lê o arquivo .mat e organiza os dados"""
+    parsed = {}
+    # Tenta encontrar vetor de tempo
+    t = mat_data.get('t') if 't' in mat_data else mat_data.get('time')
+    if t is None: return None
+    parsed['t'] = t.flatten()
     
-    raw_keys = []
-    if hasattr(ts_struct, '_fieldnames'): raw_keys = ts_struct._fieldnames
-    elif hasattr(ts_struct, 'dtype') and getattr(ts_struct.dtype, 'names', None): raw_keys = ts_struct.dtype.names
-    elif isinstance(ts_struct, dict): raw_keys = ts_struct.keys()
-    else: raw_keys = [k for k in dir(ts_struct) if not k.startswith('_')]
+    for key in mat_data.keys():
+        if key.startswith('__') or key in ['t', 'time']: continue
         
-    return sorted([str(k).replace("ts_", "") for k in raw_keys])
-
-def extract_signal(mat, point_name):
-    if 'ts' not in mat: return None, None
-    ts_root = mat['ts']
-    if isinstance(ts_root, np.ndarray): 
-        if ts_root.size == 1: ts_root = ts_root.item()
-        else: ts_root = ts_root[0]
-    
-    key = f"ts_{point_name}"
-    # Tenta acesso robusto
-    entry = ts_root.get(key) if isinstance(ts_root, dict) else getattr(ts_root, key, None)
-    
-    if entry is None: return None, None
-    if isinstance(entry, np.ndarray) and entry.size == 1: entry = entry.item()
-    
-    t = getattr(entry, "Time", getattr(entry, "time", None))
-    x = getattr(entry, "Data", getattr(entry, "data", None))
-    
-    if t is None or x is None: return None, None
-
-    t = np.asarray(t).squeeze()
-    x = np.asarray(x).squeeze()
-    
-    # Corrige orientação (N, 3)
-    if x.ndim == 2:
-        if x.shape[0] == 3 and x.shape[1] > 3: x = x.T
+        # Identifica o nome base do sinal (ex: 'VI_I_A' de 'VI_I_A_rms')
+        base = key.replace('_rms','').replace('_phasor','').replace('_seq','').replace('_clarke','').replace('_raw','')
         
-    return t, x
+        tipo = 'raw'
+        if '_rms' in key: tipo = 'rms'
+        elif '_phasor' in key: tipo = 'phasor'
+        elif '_seq' in key: tipo = 'seq'
+        elif '_clarke' in key: tipo = 'clarke'
+        
+        if base not in parsed: parsed[base] = {}
+        parsed[base][tipo] = mat_data[key]
+    return parsed
 
 # =========================================================
-# 2. MACHINE LEARNING (CLASSIFICADOR T2F)
+# 🎬 3. MOTOR GRÁFICO (COMPARISON ENGINE)
 # =========================================================
-def train_model():
-    if not os.path.exists(DATASET_FILE): return None
-    try:
-        df = pd.read_csv(DATASET_FILE)
-        if len(df) < 3: return None # Mínimo para começar
-        X = df[['r0', 'r2', 'v1_mag', 'i1_mag']]
-        y = df['label']
-        clf = DecisionTreeClassifier(max_depth=5, random_state=42)
-        clf.fit(X, y)
-        return clf
-    except: return None
-
-def classify_fault_hybrid(V0, V1, V2, I0, I1, I2, thresh_0, thresh_2):
-    i1_mag = abs(I1); denom = i1_mag if i1_mag > 1e-3 else 1e-3
-    r0 = abs(I0) / denom; r2 = abs(I2) / denom
+def create_comparison_dashboard(t, v_curr, i_curr, v_ref, i_ref, pickup, dial, curve):
     
-    # Features garantidas como float puro (evita erro de serialização)
-    features = {
-        'r0': float(r0), 'r2': float(r2), 
-        'v1_mag': float(abs(V1)), 'i1_mag': float(i1_mag)
-    }
+    # --- PREPARAÇÃO DE DADOS ---
+    def get_d(d_dict, key, shape_def):
+        if d_dict is None: return np.zeros(shape_def)
+        return d_dict.get(key, np.zeros(shape_def))
 
-    model = train_model()
-    if model:
-        try:
-            pred = model.predict(pd.DataFrame([features]))[0]
-            return pred, "#2196F3", f"🤖 IA T2F ({len(pd.read_csv(DATASET_FILE))} casos)", features
-        except:
-            pass # Fallback para manual se o modelo falhar
-
-    # Heurística T2F (Baseada na sua Tese)
-    if i1_mag < 0.1: return "Sem Carga", "gray", "Manual", features
-    if r0 > thresh_0 and r2 > thresh_2:
-        if 0.8 < (r0/r2) < 1.2: return "Bifásico Terra (AC/BC)", "#E91E63", "Manual", features
-    if r2 > thresh_2 and r0 < thresh_0: return "Bifásico Aéreo (AB)", "#FF9800", "Manual", features
-    if r0 < thresh_0 and r2 < thresh_2: return "Normal / Trifásico", "#4CAF50", "Manual", features
-    return "Indeterminado", "gray", "Manual", features
-
-def save_training_point(features, true_label):
-    data = features.copy(); data['label'] = true_label
-    df_new = pd.DataFrame([data])
-    if os.path.exists(DATASET_FILE): df_new.to_csv(DATASET_FILE, mode='a', header=False, index=False)
-    else: df_new.to_csv(DATASET_FILE, index=False)
-
-# =========================================================
-# 3. MATEMÁTICA (CACHEADA)
-# =========================================================
-def clarke_transform(a, b, c, mode="power"):
-    k = (2/3) if mode == "amp" else np.sqrt(2/3)
-    alpha = k * (a - 0.5*b - 0.5*c)
-    beta  = k * ((np.sqrt(3)/2)*b - (np.sqrt(3)/2)*c)
-    return alpha, beta
-
-def phasor_from_signal(x, t, f0=60.0):
-    x = x - np.mean(x); N = len(x)
-    if N < 4: return 0j
-    window = windows.hann(N); xw = x * window
-    X = np.sum(xw * np.exp(-1j * 2*np.pi*f0*t))
-    return (2.0 * X / np.sum(window)) / np.sqrt(2)
-
-def sym_comp_phasors(Va, Vb, Vc):
-    a = np.exp(1j * 2*np.pi/3)
-    T = (1/3) * np.array([[1, 1, 1], [1, a**2, a], [1, a, a**2]], dtype=complex)
-    return T @ np.array([Va, Vb, Vc])
-
-def calculate_impedance(Va, Vb, Vc, Ia, Ib, Ic):
-    # Cálculo seguro contra divisão por zero
-    with np.errstate(divide='ignore', invalid='ignore'):
-        Za = np.where(np.abs(Ia)>1e-2, Va/Ia, 0j)
-        Zb = np.where(np.abs(Ib)>1e-2, Vb/Ib, 0j)
-        Zc = np.where(np.abs(Ic)>1e-2, Vc/Ic, 0j)
-    return Za, Zb, Zc
-
-def synth_phasor_time(Vrms, t, f0):
-    # Retorna APENAS a parte real para plotagem (evita erros de complexo no plotly)
-    return np.sqrt(2) * np.real(Vrms * np.exp(1j * 2*np.pi*f0*t))
-
-@st.cache_data(show_spinner=False)
-def process_full_analysis(t, va, vb, vc, ia, ib, ic, f0, clarke_mode, t0, t2):
-    # 1. Clarke
-    alpha_v, beta_v = clarke_transform(va, vb, vc, mode=clarke_mode)
-    alpha_i, beta_i = clarke_transform(ia, ib, ic, mode=clarke_mode)
+    N = len(t)
+    # Dados Atuais
+    vc_rms = get_d(v_curr, 'rms', (N,3))
+    ic_rms = get_d(i_curr, 'rms', (N,3))
+    vc_ph = get_d(v_curr, 'phasor', (N,3))
+    ic_ph = get_d(i_curr, 'phasor', (N,3))
+    ic_clk = get_d(i_curr, 'clarke', (N,2))
     
-    # 2. Fasores
-    Va_ph = phasor_from_signal(va, t, f0); Vb_ph = phasor_from_signal(vb, t, f0); Vc_ph = phasor_from_signal(vc, t, f0)
-    Ia_ph = phasor_from_signal(ia, t, f0); Ib_ph = phasor_from_signal(ib, t, f0); Ic_ph = phasor_from_signal(ic, t, f0)
+    # Dados de Referência (Se houver)
+    has_ref = v_ref is not None
+    vr_rms = get_d(v_ref, 'rms', (N,3))
+    ir_rms = get_d(i_ref, 'rms', (N,3))
+    vr_ph = get_d(v_ref, 'phasor', (N,3))
+    ir_ph = get_d(i_ref, 'phasor', (N,3))
+
+    # Downsampling para animação (Performance)
+    n_frames = 120
+    step = max(1, int(N / n_frames))
+    indices = range(0, N, step)
+
+    # --- LAYOUT GRID ---
+    # Linha 1: Comparação Ondas (V e I) | TCC (Direita)
+    # Linha 2: Fasores (V e I) | TCC (Continuação)
+    # Linha 3: Clarke (Ocupa largura total)
     
-    V0, V1, V2 = sym_comp_phasors(Va_ph, Vb_ph, Vc_ph)
-    I0, I1, I2 = sym_comp_phasors(Ia_ph, Ib_ph, Ic_ph)
-    
-    # 3. Classificação e Impedância
-    desc, color, method, features = classify_fault_hybrid(V0, V1, V2, I0, I1, I2, t0, t2)
-    Za, Zb, Zc = calculate_impedance(va, vb, vc, ia, ib, ic)
-    
-    # 4. Reconstrução Temporal (Sequências)
-    a_op = np.exp(1j * 2*np.pi/3)
-    Ti = np.array([[1, 1, 1], [1, a_op, a_op**2], [1, a_op**2, a_op]], dtype=complex)
-    
-    def get_seq_data(C0, C1, C2):
-        v_a0, _, _ = Ti @ np.array([C0, 0, 0]); s0 = synth_phasor_time(v_a0, t, f0)
-        v_a1, _, _ = Ti @ np.array([0, C1, 0]); s1 = synth_phasor_time(v_a1, t, f0)
-        v_a2, _, _ = Ti @ np.array([0, 0, C2]); s2 = synth_phasor_time(v_a2, t, f0)
-        return s0, s1, s2
-
-    s0v, s1v, s2v = get_seq_data(V0, V1, V2)
-    s0i, s1i, s2i = get_seq_data(I0, I1, I2)
-
-    return {
-        "t": t, "v": (va, vb, vc), "i": (ia, ib, ic),
-        "clarke_v": (alpha_v, beta_v), "clarke_i": (alpha_i, beta_i),
-        "phasors_v": (V0, V1, V2), "phasors_i": (I0, I1, I2),
-        "seqs_v": (s0v, s1v, s2v), "seqs_i": (s0i, s1i, s2i),
-        "fault_info": (desc, color, method),
-        "features": features, 
-        "Z_traj": (Za, Zb, Zc)
-    }
-
-# =========================================================
-# 4. PLOTAGEM ESTÁVEL (SVG + DECIMAÇÃO)
-# =========================================================
-def plot_animation_robust(data, mode):
-    t = data["t"]
-    
-    # Seleção de Dados
-    if mode == "Tensão":
-        a, b, c = data["v"]; av, bv = data["clarke_v"]; s0, s1, s2 = data["seqs_v"]
-        phasors = data["phasors_v"]
-    else:
-        a, b, c = data["i"]; av, bv = data["clarke_i"]; s0, s1, s2 = data["seqs_i"]
-        phasors = data["phasors_i"]
-
-    # Decimação (Reduzir pontos para não travar o Plotly)
-    t_vis, a_vis = safe_downsample(t, a); _, b_vis = safe_downsample(t, b); _, c_vis = safe_downsample(t, c)
-    _, av_vis = safe_downsample(t, av); _, bv_vis = safe_downsample(t, bv)
-    _, s0_vis = safe_downsample(t, s0); _, s1_vis = safe_downsample(t, s1); _, s2_vis = safe_downsample(t, s2)
-
-    # Layout Matriz 2x3 (Tempo, Fasor, Clarke, Seqs, 3D)
-    fig = make_subplots(rows=2, cols=3, 
-        specs=[[{"colspan": 2}, None, {"type": "polar"}], 
-               [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}]],
-        subplot_titles=(f"Formas de Onda {mode}", f"Fasores {mode} (Fund.)", 
-                        "Plano Clarke (αβ)", "Sequências (Tempo)", "Análise Espacial (Alpha-Beta-Time)"),
-        horizontal_spacing=0.08, vertical_spacing=0.15)
-    
-    # 1. TEMPO (SVG Otimizado)
-    fig.add_trace(go.Scatter(x=t_vis, y=a_vis, name="A", line=dict(color=THEME["A"], width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t_vis, y=b_vis, name="B", line=dict(color=THEME["B"], width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t_vis, y=c_vis, name="C", line=dict(color=THEME["C"], width=1.5)), row=1, col=1)
-
-    # 2. FASORES (Polar)
-    p0, p1, p2 = phasors
-    fig.add_trace(go.Scatterpolar(r=[0, abs(p1)], theta=[0, np.angle(p1, deg=True)], name="Pos", line_color=THEME["V1"]), row=1, col=3)
-    fig.add_trace(go.Scatterpolar(r=[0, abs(p2)], theta=[0, np.angle(p2, deg=True)], name="Neg", line_color=THEME["V2"]), row=1, col=3)
-    fig.add_trace(go.Scatterpolar(r=[0, abs(p0)], theta=[0, np.angle(p0, deg=True)], name="Zero", line_color=THEME["V0"]), row=1, col=3)
-
-    # 3. CLARKE (XY)
-    fig.add_trace(go.Scatter(x=av_vis, y=bv_vis, mode='lines', name="αβ", line=dict(color="white", width=1)), row=2, col=1)
-
-    # 4. SEQUENCIAS (Tempo)
-    fig.add_trace(go.Scatter(x=t_vis, y=s1_vis, name="V1", line=dict(color=THEME["V1"], width=1)), row=2, col=2)
-    fig.add_trace(go.Scatter(x=t_vis, y=s2_vis, name="V2", line=dict(color=THEME["V2"], width=1)), row=2, col=2)
-    fig.add_trace(go.Scatter(x=t_vis, y=s0_vis, name="V0", line=dict(color=THEME["V0"], width=1)), row=2, col=2)
-
-    # 5. 3D SIMULADO (Scatter 2D colorido pelo tempo)
-    # Isso é mais leve que um gráfico 3D real e mostra a mesma informação de evolução
-    fig.add_trace(go.Scatter(
-        x=av_vis, y=bv_vis, 
-        mode='markers', 
-        marker=dict(size=3, color=np.arange(len(av_vis)), colorscale='Viridis', showscale=False), 
-        name="Evolução"
-    ), row=2, col=3)
-
-    # Layout Global Dark
-    fig.update_layout(
-        height=700, 
-        template="plotly_dark", 
-        paper_bgcolor=THEME["bg"], 
-        plot_bgcolor=THEME["plot_bg"],
-        font=dict(color=THEME["text"]),
-        margin=dict(l=20, r=20, t=40, b=20),
-        legend=dict(orientation="h", y=-0.1)
+    fig = make_subplots(
+        rows=3, cols=3,
+        specs=[
+            [{"type": "xy"}, {"type": "xy"}, {"type": "xy", "rowspan": 2}], # TCC ocupa 2 linhas na direita
+            [{"type": "xy"}, {"type": "xy"}, None],
+            [{"type": "xy", "colspan": 3}, None, None] # Clarke largo embaixo
+        ],
+        column_widths=[0.3, 0.3, 0.4],
+        subplot_titles=("Comparação Tensão (V)", "Comparação Corrente (A)", "Proteção (TCC)", 
+                        "Fasores V (Ref=Sombra)", "Fasores I (Ref=Sombra)", "Plano Alpha-Beta (Clarke)")
     )
-    
-    # Eixos Polares
-    fig.update_layout(polar=dict(bgcolor=THEME["plot_bg"], radialaxis=dict(showticklabels=False, gridcolor=THEME["grid"])))
-    
-    return fig
 
-def plot_3d_trajectory_real(alpha, beta, t):
-    """Gráfico 3D Real para análise profunda."""
-    # Decimação agressiva para 3D (máx 2000 pontos) para não travar rotação
-    t_v, _ = safe_downsample(t, t, 2000)
-    a_v, _ = safe_downsample(t, alpha, 2000)
-    b_v, _ = safe_downsample(t, beta, 2000)
+    # --- ELEMENTOS ESTÁTICOS (FUNDO) ---
+    ds = 20 # Downsample visual estático
     
-    fig = go.Figure(data=[go.Scatter3d(
-        x=a_v, y=b_v, z=t_v,
-        mode='lines',
-        line=dict(color=t_v, colorscale='Turbo', width=5),
-        name='Trajetória'
-    )])
+    # 1. Ondas (Fundo)
+    for i, c in enumerate([THEME['A'], THEME['B'], THEME['C']]):
+        # Atual (Linha contínua)
+        fig.add_trace(go.Scatter(x=t[::ds], y=vc_rms[::ds,i], line=dict(color=c, width=1), opacity=0.4, showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=t[::ds], y=ic_rms[::ds,i], line=dict(color=c, width=1), opacity=0.4, showlegend=False), row=1, col=2)
+        # Ref (Linha tracejada)
+        if has_ref:
+            fig.add_trace(go.Scatter(x=t[::ds], y=vr_rms[::ds,i], line=dict(color=c, width=1, dash='dot'), opacity=0.3, showlegend=False), row=1, col=1)
+            fig.add_trace(go.Scatter(x=t[::ds], y=ir_rms[::ds,i], line=dict(color=c, width=1, dash='dot'), opacity=0.3, showlegend=False), row=1, col=2)
+
+    # 2. Inicialização dos Pontos Móveis (Trace Placeholders)
+    # Precisamos criar os traces na ordem exata que vamos atualizar nos frames
     
+    # [0-1] Pontos Ondas Atuais
+    fig.add_trace(go.Scatter(x=[t[0]]*3, y=[0]*3, mode='markers', marker=dict(color=[THEME['A'], THEME['B'], THEME['C']], size=8)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[t[0]]*3, y=[0]*3, mode='markers', marker=dict(color=[THEME['A'], THEME['B'], THEME['C']], size=8)), row=1, col=2)
+    
+    # [2-3] Pontos Ondas Ref (Se houver)
+    if has_ref:
+        fig.add_trace(go.Scatter(x=[t[0]]*3, y=[0]*3, mode='markers', marker=dict(color=[THEME['A'], THEME['B'], THEME['C']], size=6, symbol='circle-open')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=[t[0]]*3, y=[0]*3, mode='markers', marker=dict(color=[THEME['A'], THEME['B'], THEME['C']], size=6, symbol='circle-open')), row=1, col=2)
+
+    # [4-5] Fasores Ref (Sombra)
+    if has_ref:
+        fig.add_trace(go.Scatter(x=[], y=[], mode='lines+markers', line=dict(width=1, dash='dot', color='gray'), marker=dict(symbol='x')), row=2, col=1)
+        fig.add_trace(go.Scatter(x=[], y=[], mode='lines+markers', line=dict(width=1, dash='dot', color='gray'), marker=dict(symbol='x')), row=2, col=2)
+
+    # [6-7] Fasores Atuais
+    fig.add_trace(go.Scatter(x=[], y=[], mode='lines+markers', line=dict(width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[], y=[], mode='lines+markers', line=dict(width=3)), row=2, col=2)
+
+    # [8-10] TCC (Curva + Pontos)
+    cx, cy = get_tcc_curve(pickup, dial, curve)
+    fig.add_trace(go.Scatter(x=cx, y=cy, line=dict(color='yellow', width=3), name="Curva TCC"), row=1, col=3) # Estático
+    fig.add_vline(x=pickup, line_dash="dash", line_color="gray", row=1, col=3) # Estático
+    
+    fig.add_trace(go.Scatter(x=[0.1]*3, y=[0.1]*3, mode='markers+text', marker=dict(color=[THEME['A'], THEME['B'], THEME['C']], size=12, line=dict(width=1, color='white')), name="Atual"), row=1, col=3)
+    if has_ref:
+        fig.add_trace(go.Scatter(x=[0.1]*3, y=[0.1]*3, mode='markers', marker=dict(color=[THEME['A'], THEME['B'], THEME['C']], size=10, symbol='circle-open'), name="Ref"), row=1, col=3)
+
+    # [11] Clarke
+    fig.add_trace(go.Scatter(x=[0], y=[0], mode='markers', marker=dict(color='white', size=10, line=dict(width=2, color='cyan'))), row=3, col=1)
+
+    # --- GERAÇÃO DE FRAMES ---
+    frames = []
+    
+    # Escalas para Eixos Fixos
+    max_v = max(1, np.max(vc_rms)*1.1)
+    max_i = max(1, np.max(ic_rms)*1.1)
+    max_clk = max(10, np.max(np.abs(ic_clk))*1.1)
+
+    for k in indices:
+        tc = t[k]
+        
+        # Dados do frame
+        vc = vc_rms[k]; ic = ic_rms[k]
+        vr = vr_rms[k] if has_ref else [0]*3; ir = ir_rms[k] if has_ref else [0]*3
+        
+        # Helper Fasores
+        def get_vecs(phasors):
+            x, y = [], []
+            for p in phasors:
+                mag = np.abs(p); ang = np.angle(p)
+                x.extend([0, mag*np.cos(ang), None])
+                y.extend([0, mag*np.sin(ang), None])
+            return x, y
+        
+        vc_x, vc_y = get_vecs(vc_ph[k]); ic_x, ic_y = get_vecs(ic_ph[k])
+        vr_x, vr_y = get_vecs(vr_ph[k]) if has_ref else ([],[]); ir_x, ir_y = get_vecs(ir_ph[k]) if has_ref else ([],[])
+
+        # TCC Calc
+        tcc_curr_x = [max(v, 0.101) for v in ic]
+        tcc_curr_y = [calc_trip_time(v, pickup, dial, curve) for v in ic]
+        tcc_curr_txt = [f"{v:.1f}A" if v > 0.5 else "" for v in ic]
+        
+        tcc_ref_x = [max(v, 0.101) for v in ir]
+        tcc_ref_y = [calc_trip_time(v, pickup, dial, curve) for v in ir]
+
+        # DATA LIST DO FRAME (Deve bater com a ordem dos traces acima)
+        data_list = []
+        
+        # 1. Pontos Onda Atual
+        data_list.append(go.Scatter(x=[tc]*3, y=vc))
+        data_list.append(go.Scatter(x=[tc]*3, y=ic))
+        
+        # 2. Pontos Onda Ref
+        if has_ref:
+            data_list.append(go.Scatter(x=[tc]*3, y=vr))
+            data_list.append(go.Scatter(x=[tc]*3, y=ir))
+
+        # 3. Fasores Ref
+        if has_ref:
+            data_list.append(go.Scatter(x=vr_x, y=vr_y))
+            data_list.append(go.Scatter(x=ir_x, y=ir_y))
+            
+        # 4. Fasores Atuais
+        data_list.append(go.Scatter(x=vc_x, y=vc_y))
+        data_list.append(go.Scatter(x=ic_x, y=ic_y))
+        
+        # 5. TCC (Pula estáticos, atualiza dinâmicos)
+        data_list.append(go.Scatter()) # Curva estática (sem mudança)
+        data_list.append(go.Scatter(x=tcc_curr_x, y=tcc_curr_y, text=tcc_curr_txt)) # Atual
+        if has_ref:
+            data_list.append(go.Scatter(x=tcc_ref_x, y=tcc_ref_y)) # Ref
+
+        # 6. Clarke
+        data_list.append(go.Scatter(x=[ic_clk[k,0]], y=[ic_clk[k,1]]))
+
+        frames.append(go.Frame(data=data_list, name=f"{tc:.3f}"))
+
+    fig.frames = frames
+
+    # --- LAYOUT FINAL ---
     fig.update_layout(
-        title="Espiral de Clarke no Tempo",
-        scene=dict(
-            xaxis_title='Alpha', yaxis_title='Beta', zaxis_title='Tempo (s)',
-            xaxis=dict(backgroundcolor=THEME["plot_bg"], gridcolor=THEME["grid"]),
-            yaxis=dict(backgroundcolor=THEME["plot_bg"], gridcolor=THEME["grid"]),
-            zaxis=dict(backgroundcolor=THEME["plot_bg"], gridcolor=THEME["grid"]),
-        ),
-        height=700, 
-        template="plotly_dark",
-        paper_bgcolor=THEME["bg"]
+        template="plotly_dark", height=850,
+        margin=dict(l=20, r=20, t=50, b=50),
+        # Eixos Ondas
+        xaxis1=dict(range=[0, t[-1]]), yaxis1=dict(range=[0, max_v]),
+        xaxis2=dict(range=[0, t[-1]]), yaxis2=dict(range=[0, max_i]),
+        # Eixos Fasores (Quadrados)
+        xaxis4=dict(range=[-max_v, max_v]), yaxis4=dict(range=[-max_v, max_v], scaleanchor="x4", scaleratio=1),
+        xaxis5=dict(range=[-max_i, max_i]), yaxis5=dict(range=[-max_i, max_i], scaleanchor="x5", scaleratio=1),
+        # Eixo TCC (Log)
+        xaxis3=dict(type='log', range=[np.log10(0.1), np.log10(30000)], title="Corrente (A)"),
+        yaxis3=dict(type='log', range=[np.log10(0.01), np.log10(1000)], title="Tempo (s)"),
+        # Eixo Clarke (Quadrado)
+        xaxis7=dict(range=[-max_clk, max_clk], title="Alpha"), 
+        yaxis7=dict(range=[-max_clk, max_clk], title="Beta", scaleanchor="x7", scaleratio=1),
+        
+        # Controles
+        updatemenus=[dict(type="buttons", showactive=False, x=0.5, y=-0.1, xanchor="center", direction="left",
+            buttons=[dict(label="▶ Play", method="animate", args=[None, dict(frame=dict(duration=20, redraw=True), fromcurrent=True, mode="immediate")]),
+                     dict(label="⏸ Pause", method="animate", args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])])],
+        sliders=[dict(steps=[dict(method='animate', args=[[f.name], dict(mode='immediate', frame=dict(duration=0, redraw=True))], label=f.name) for f in frames],
+            active=0, x=0.1, len=0.8, pad=dict(t=20), currentvalue=dict(prefix="Tempo: ", visible=True))]
     )
     return fig
 
 # =========================================================
-# 5. APP PRINCIPAL
+# 🚀 4. APLICAÇÃO
 # =========================================================
-st.title("⚡ Análise T2F Avançada (PhD Tool)")
+st.title("⚖️ Comparison Studio & TCC")
 
 with st.sidebar:
-    st.markdown("### 1. Dados de Entrada")
-    uploaded_files = st.file_uploader("Arquivos .mat", type=["mat"], accept_multiple_files=True)
+    st.header("1. Arquivos")
+    uploaded = st.file_uploader("Carregar .MAT", type=['mat'], accept_multiple_files=True)
     
-    if not uploaded_files:
-        st.info("Aguardando arquivos...")
-        st.stop()
+    if uploaded:
+        if 'db' not in st.session_state: st.session_state['db'] = {}
+        for f in uploaded:
+            # Lê o arquivo
+            raw = sio.loadmat(f, squeeze_me=True)
+            # Armazena parseado no banco
+            st.session_state['db'][f.name] = parse_mat_file(raw)
     
-    # Carrega todos os arquivos
-    mats = {}
-    for uf in uploaded_files:
-        res = load_mat_file(uf.getvalue())
-        if not isinstance(res, str): mats[uf.name] = res
-    
-    if not mats: st.error("Nenhum arquivo válido lido."); st.stop()
-    
-    sel = st.selectbox("Arquivo Ativo", sorted(mats.keys()))
-    mat = mats[sel]
-    keys = extract_keys_safely(mat)
-    
-    if not keys: st.error("Arquivo sem estrutura 'ts' compatível."); st.stop()
-    
-    vp = st.selectbox("Canal Tensão", [k for k in keys if k.startswith('V')] or keys, index=0)
-    ip = st.selectbox("Canal Corrente", [k for k in keys if k.startswith('I')] or keys, index=0)
+    opts = list(st.session_state.get('db', {}).keys())
     
     st.divider()
-    view = st.radio("Modo de Visualização", ["Dashboard Geral", "Análise 3D Espacial"])
-
-# --- PROCESSAMENTO ---
-t_v, vr = extract_signal(mat, vp)
-t_i, ir = extract_signal(mat, ip)
-
-if t_v is None or t_i is None or len(t_v) == 0: 
-    st.error("Erro na leitura dos sinais. Verifique o nome das variáveis."); st.stop()
-
-# Sincronização
-nm = min(len(t_v), len(t_i))
-t = t_v[:nm]; va, vb, vc = vr[:nm].T; ia, ib, ic = ir[:nm].T
-
-# Remove DC
-va -= np.mean(va); vb -= np.mean(vb); vc -= np.mean(vc)
-ia -= np.mean(ia); ib -= np.mean(ib); ic -= np.mean(ic)
-
-# Executa matemática
-data = process_full_analysis(t, va, vb, vc, ia, ib, ic, 60.0, "power", 0.15, 0.15)
-
-# --- CABEÇALHO INTELIGENTE ---
-desc, col, met, feats = data["fault_info"][0], data["fault_info"][1], data["fault_info"][2], data["features"]
-
-c1, c2, c3, c4 = st.columns([3, 1, 1, 2])
-c1.markdown(f"<div style='padding:15px; border-radius:10px; background:{col}22; border-left:5px solid {col}'>"
-            f"<h3 style='margin:0; color:{col}'>{desc}</h3><small>{met}</small></div>", unsafe_allow_html=True)
-c2.metric("I2/I1 (Neg)", f"{feats['r2']:.3f}")
-c3.metric("I0/I1 (Zero)", f"{feats['r0']:.3f}")
-
-with c4:
-    lbl_opts = ["Normal", "Trifásico C1", "Trifásico C2", "Bifásico AB", "Bifásico AC", "Bifásico BC"]
-    lbl = st.selectbox("Treinar Classificador:", lbl_opts, label_visibility="collapsed")
-    if st.button("Salvar Treino"): 
-        save_training_point(feats, lbl)
-        st.cache_data.clear()
-        st.rerun()
-
-# --- VISUALIZAÇÃO ---
-if view == "Dashboard Geral":
-    st.subheader("Análise de Tensão")
-    # KEY ÚNICA PARA EVITAR O ERRO 'Duplicate ID'
-    st.plotly_chart(plot_animation_robust(data, "Tensão"), use_container_width=True, key="chart_voltage_main")
+    f_curr = st.selectbox("Arquivo Principal (Atual)", opts) if opts else None
+    f_ref = st.selectbox("Arquivo Referência (Opcional)", ["Nenhum"] + opts) if opts else None
     
-    st.subheader("Análise de Corrente")
-    st.plotly_chart(plot_animation_robust(data, "Corrente"), use_container_width=True, key="chart_current_main")
+    st.divider()
+    st.header("2. Proteção")
+    curve = st.selectbox("Curva TCC", list(CURVES.keys()))
+    pickup = st.number_input("Pickup", 25.0)
+    dial = st.number_input("Dial", 0.5)
+    
+    btn = st.button("Gerar Comparação Fluida", type="primary")
 
-elif view == "Análise 3D Espacial":
-    st.info("Visualização 3D da trajetória do vetor de Clarke (Alpha-Beta) ao longo do tempo (Eixo Z).")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Trajetória Tensão**")
-        st.plotly_chart(plot_3d_trajectory_real(data["clarke_v"][0], data["clarke_v"][1], t), use_container_width=True, key="3d_v")
-    with c2:
-        st.markdown("**Trajetória Corrente**")
-        st.plotly_chart(plot_3d_trajectory_real(data["clarke_i"][0], data["clarke_i"][1], t), use_container_width=True, key="3d_i")
+if btn and f_curr:
+    with st.spinner("Construindo Dashboard de Comparação..."):
+        db = st.session_state['db']
+        d_curr = db[f_curr]
+        d_ref = db[f_ref] if f_ref != "Nenhum" else None
+        
+        # Auto-detect keys
+        ks = list(d_curr.keys())
+        v_key = next((k for k in ks if 'V' in k), ks[0])
+        i_key = next((k for k in ks if 'I' in k), ks[0])
+        
+        v_ref_data = d_ref[v_key] if d_ref and v_key in d_ref else None
+        i_ref_data = d_ref[i_key] if d_ref and i_key in d_ref else None
+        
+        # --- CORREÇÃO APLICADA AQUI ---
+        fig = create_comparison_dashboard(
+            d_curr['t'], # Passa o array de tempo direto (Correção do erro anterior)
+            d_curr[v_key], d_curr[i_key],
+            v_ref_data, i_ref_data,
+            pickup, dial, curve
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+elif not f_curr:
+    st.info("Carregue arquivos para começar.")

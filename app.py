@@ -190,8 +190,8 @@ def create_fluid_animation(t_vec, i_rms, i_clk, pickup, dial, curve_type):
 
     fig.frames = frames
     fig.update_layout(template="plotly_dark", height=750, margin=dict(t=40, b=40),
-        xaxis1=dict(type="log", range=[np.log10(0.1), np.log10(30000)], title="Corrente (A)", showgrid=True, gridcolor=THEME['grid']),
-        yaxis1=dict(type="log", range=[np.log10(0.01), np.log10(1000)], title="Tempo (s)", showgrid=True, gridcolor=THEME['grid']),
+        xaxis1=dict(type="log", range=[np.log10(0.1), np.log10(500000)], title="Corrente (A)", showgrid=True, gridcolor=THEME['grid']),
+        yaxis1=dict(type="log", range=[np.log10(0.01), np.log10(3000)], title="Tempo (s)", showgrid=True, gridcolor=THEME['grid']),
         xaxis2=dict(range=[-limit, limit], title="Alpha", showgrid=True, gridcolor=THEME['grid'], scaleanchor="y2", scaleratio=1),
         yaxis2=dict(range=[-limit, limit], title="Beta", showgrid=True, gridcolor=THEME['grid']),
         updatemenus=[dict(type="buttons", showactive=False, y=1.05, x=1.0, xanchor="right",
