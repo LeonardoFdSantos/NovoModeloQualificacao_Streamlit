@@ -334,36 +334,36 @@ with dpg.file_dialog(directory_selector=False, show=False, callback=load_file_cb
 with dpg.file_dialog(directory_selector=False, show=False, callback=load_file_cb, id="fd_ref", width=700, height=500, user_data="ref"):
     dpg.add_file_extension(".mat", color=(255, 255, 0))
 
-dpg.set_global_font_scale(1.3)
+dpg.set_global_font_scale(1.1)
 
 with dpg.window(tag="Win"):
     with dpg.collapsing_header(label="Configuração", default_open=True):
         with dpg.group(horizontal=True):
-            with dpg.group(width=400):
+            with dpg.group(width=250):
                 dpg.add_text("PRINCIPAL", color=(0, 255, 255))
-                dpg.add_button(label="1. Carregar Principal", callback=lambda: dpg.show_item("fd_curr"), height=40, width=200)
+                dpg.add_button(label="1. Carregar Principal", callback=lambda: dpg.show_item("fd_curr"), height=30, width=200)
                 dpg.add_spacer(height=5)
-                dpg.add_text("Tensão (V):"); dpg.add_combo([], tag="c_v_mat", width=350)
-                dpg.add_text("Corrente (I):"); dpg.add_combo([], tag="c_i_mat", width=350)
+                dpg.add_text("Tensão (V):"); dpg.add_combo([], tag="c_v_mat", width=250)
+                dpg.add_text("Corrente (I):"); dpg.add_combo([], tag="c_i_mat", width=250)
 
             dpg.add_spacer(width=50)
 
-            with dpg.group(width=400):
+            with dpg.group(width=250):
                 dpg.add_text("REFERÊNCIA", color=(255, 100, 100))
-                dpg.add_button(label="2. Carregar Ref", callback=lambda: dpg.show_item("fd_ref"), height=40, width=200)
+                dpg.add_button(label="2. Carregar Ref", callback=lambda: dpg.show_item("fd_ref"), height=30, width=200)
                 dpg.add_spacer(height=5)
-                dpg.add_text("Ref Tensão:"); dpg.add_combo([], tag="c_v_ref", width=350)
-                dpg.add_text("Ref Corrente:"); dpg.add_combo([], tag="c_i_ref", width=350)
+                dpg.add_text("Ref Tensão:"); dpg.add_combo([], tag="c_v_ref", width=250)
+                dpg.add_text("Ref Corrente:"); dpg.add_combo([], tag="c_i_ref", width=250)
 
         dpg.add_spacer(height=10); dpg.add_separator()
-        dpg.add_button(label="PROCESSAR TUDO", width=-1, height=60, callback=trigger_process)
+        dpg.add_button(label="PROCESSAR TUDO", width=-1, height=25, callback=trigger_process)
         dpg.add_text("Status...", tag="status")
 
     dpg.add_separator()
     
     with dpg.group():
         with dpg.group(horizontal=True):
-            dpg.add_button(label="Play/Pause", callback=lambda: setattr(state, 'playing', not state.playing), height=40, width=100)
+            dpg.add_button(label="Play/Pause", callback=lambda: setattr(state, 'playing', not state.playing), height=20, width=100)
             dpg.add_slider_int(label="Speed", default_value=5, max_value=50, width=150, callback=lambda s,a: setattr(state, 'speed', a))
             dpg.add_spacer(width=30)
             dpg.add_checkbox(label="Sync Ref", tag="chk_sync", default_value=True, callback=cb_sync)
@@ -383,14 +383,14 @@ with dpg.window(tag="Win"):
     with dpg.tab_bar():
         with dpg.tab(label="Monitoramento"):
             # RMS
-            with dpg.plot(height=250, width=-1):
+            with dpg.plot(height=300, width=-1):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, label="Tempo", tag="ax_rms_x")
                 with dpg.plot_axis(dpg.mvYAxis, label="V", tag="ax_rms_yv"): pass
                 dpg.add_drag_line(tag="cur_rms", vertical=True)
                 dpg.add_drag_line(tag="cur_rms_ref", vertical=True, color=(200,50,50,200), show=False)
             
-            with dpg.plot(height=250, width=-1):
+            with dpg.plot(height=300, width=-1):
                 dpg.add_plot_legend()
                 dpg.add_plot_axis(dpg.mvXAxis, label="Tempo", tag="ax_rms_x_i")
                 with dpg.plot_axis(dpg.mvYAxis, label="A", tag="ax_rms_yi"): pass
@@ -419,8 +419,8 @@ with dpg.window(tag="Win"):
                 with dpg.group():
                     with dpg.group(horizontal=True):
                         dpg.add_combo(CURVE_LIST, default_value=CURVE_LIST[0], width=200, callback=cb_tcc, tag="in_cv")
-                        dpg.add_input_float(label="Pk", default_value=25.0, width=80, callback=cb_tcc, tag="in_pk")
-                        dpg.add_input_float(label="Dl", default_value=0.5, width=80, callback=cb_tcc, tag="in_td")
+                        dpg.add_input_float(label="Corrente Pickup", default_value=25.0, width=150, callback=cb_tcc, tag="in_pk")
+                        dpg.add_input_float(label="Dial de Tempo", default_value=0.5, width=150, callback=cb_tcc, tag="in_td")
                     
                     with dpg.plot(label="Curva TCC", width=-1, height=400):
                         dpg.add_plot_legend()
