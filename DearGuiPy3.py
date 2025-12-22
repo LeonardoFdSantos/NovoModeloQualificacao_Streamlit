@@ -22,7 +22,7 @@ class SignalProcessor:
         self.t = t.flatten()
         self.freq = freq
         
-        self.v_raw = self._fix_shape(v_matrix, len(self.t))
+        self.v_raw = self._fix_shape(v_matrix, len(self.t))/np.sqrt(3)
         self.i_raw = self._fix_shape(i_matrix, len(self.t))
         
         L = min(len(self.t), len(self.v_raw), len(self.i_raw))
