@@ -1,0 +1,17 @@
+﻿Condição,Falta_MRT,Falta_T2F,Métrica,MRT (A),T2F (A),Δ Absoluto (A),Δ Relativo (%)
+COM Aterramento,A-G,ABC,I_pico,50.72,26.48,-24.24,-47.79
+COM Aterramento,A-G,ABC,I0,,0.00,,
+COM Aterramento,A-G,ABC,I1,,6.84,,
+COM Aterramento,A-G,ABC,I2,,0.45,,
+COM Aterramento,A-G,AB,I_pico,50.72,23.73,-26.99,-53.21
+COM Aterramento,A-G,AB,I0,,0.00,,
+COM Aterramento,A-G,AB,I1,,7.86,,
+COM Aterramento,A-G,AB,I2,,1.84,,
+COM Aterramento,A-G,AC,I_pico,50.72,23.72,-27.00,-53.23
+COM Aterramento,A-G,AC,I0,,0.00,,
+COM Aterramento,A-G,AC,I1,,8.09,,
+COM Aterramento,A-G,AC,I2,,1.91,,
+COM Aterramento,A-G,BC,I_pico,50.72,23.26,-27.46,-54.14
+COM Aterramento,A-G,BC,I0,,0.00,,
+COM Aterramento,A-G,BC,I1,,7.97,,
+COM Aterramento,A-G,BC,I2,,1.75,,
