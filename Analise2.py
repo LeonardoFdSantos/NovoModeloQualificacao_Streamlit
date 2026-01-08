@@ -814,7 +814,7 @@ class AnalisadorCapitulo4:
 if __name__ == "__main__":
     
     # Configuração
-    pasta_entrada = Path("C:/Users/leosa/OneDrive/Coisas_Leonardo/gits/CurtosT2F/T2F_MATLAB/NovoArtigoPowerDelivery34bus/NovoModeloQualificacao/Teste_Novo_Sem_Terra_10/Processados_HDF5")
+    pasta_entrada = Path("C:/Users/Leonardo Felipe/OneDrive/Coisas_Leonardo/gits/CurtosT2F/T2F_MATLAB/NovoArtigoPowerDelivery34bus/NovoModeloQualificacao/Teste_Novo_Sem_Terra_10/Processados_HDF5")
     pasta_saida = "Resultados_Cap4_Tese_Final"
     
     # Cria analisador
