@@ -406,6 +406,7 @@ def gerar_bloco_3(lista_cenarios, pasta_saida):
 
 
 # --- BLOCO 4: COMPARAÇÃO T2F vs MRN ---
+# --- BLOCO 4: COMPARAÇÃO T2F vs MRN ---
 def gerar_bloco_4(lista_cenarios, pasta_saida):
     print("🔹 Gerando Bloco 4: Comparativo T2F vs MRN...")
     subpasta = Path(pasta_saida) / "Bloco4_Comparativo"
@@ -428,8 +429,18 @@ def gerar_bloco_4(lista_cenarios, pasta_saida):
     df = pd.DataFrame(comparativo)
     if df.empty: return
 
+    # --- CORREÇÃO DE DUPLICATAS ---
+    # Verifica se existem duplicatas para avisar o usuário
+    duplicatas = df[df.duplicated(subset=['tipo_falta', 'topologia'], keep=False)]
+    if not duplicatas.empty:
+        print(f"⚠️ AVISO: Encontradas {len(duplicatas)} entradas duplicadas no Bloco 4.")
+        print("   -> O código usará a MÉDIA dos valores para esses casos.")
+        # print(duplicatas) # Descomente se quiser ver quais são
+
     # Gráfico 4.1: Corrente de Falta (Agrupado por Tipo Falta)
-    pivot_i = df.pivot(index='tipo_falta', columns='topologia', values='I_falta_820')
+    # Mudamos de .pivot() para .pivot_table() com aggfunc='mean'
+    pivot_i = df.pivot_table(index='tipo_falta', columns='topologia', values='I_falta_820', aggfunc='mean')
+
     if not pivot_i.empty:
         pivot_i.plot(kind='bar', figsize=(10, 6), color=[CORES['MRN'], CORES['T2F']])
         plt.title("Corrente Máxima de Falta (820) - MRN vs T2F")
@@ -439,7 +450,8 @@ def gerar_bloco_4(lista_cenarios, pasta_saida):
         plt.close()
 
     # Gráfico 4.2: Desequilíbrio (Agrupado por Tipo Falta)
-    pivot_v = df.pivot(index='tipo_falta', columns='topologia', values='V2_V1_822')
+    pivot_v = df.pivot_table(index='tipo_falta', columns='topologia', values='V2_V1_822', aggfunc='mean')
+
     if not pivot_v.empty:
         pivot_v.plot(kind='bar', figsize=(10, 6), color=[CORES['MRN'], CORES['T2F']])
         plt.title("Desequilíbrio V2/V1 (822) - MRN vs T2F")
