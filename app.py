@@ -1,366 +1,407 @@
 import streamlit as st
+import pandas as pd
 import numpy as np
-import scipy.io as sio
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import time
+from scipy.fft import rfft, rfftfreq
 
-# =========================================================
-# 📚 1. CONFIGURAÇÕES
-# =========================================================
-st.set_page_config(page_title="T2F Master Suite", layout="wide", page_icon="⚡")
+# ==============================================================================
+# 1. CONSTANTES E CONFIGURAÇÕES
+# ==============================================================================
+BARRAS_DISPONIVEIS = ["800", "818", "820", "822", "T2F1", "T2F"]
+FREQ_SISTEMA = 60.0
+INSTANTE_FALTA = 0.5 / 3  # ~0.1667 s
 
-CURVES = {
-    "IEC Standard Inverse":  (0.14, 0.0, 0.02),
-    "IEC Very Inverse":      (13.5, 0.0, 1.0),
-    "IEC Extremely Inverse": (80.0, 0.0, 2.0),
-    "IEC Long Time Inverse": (120.0, 0.0, 1.0),
-    "IEEE Moderately Inv":   (0.0515, 0.114, 0.02),
-    "IEEE Very Inverse":     (19.61, 0.491, 2.0),
-    "IEEE Extremely Inv":    (28.2, 0.1217, 2.0)
-}
+st.set_page_config(page_title="Análise de Proteção - Tese", layout="wide")
 
-THEME = {
-    "A": "#00ffff", "B": "#ff3333", "C": "#00ff00",
-    "V1": "#4facfe", "V2": "#f093fb", "V0": "#fcc203",
-    "Ref": "#ff6600",
-    "bg": "#1e1e1e", "grid": "#444"
-}
+# ==============================================================================
+# 2. FUNÇÕES MATEMÁTICAS (O MOTOR DE CÁLCULO)
+# ==============================================================================
 
-# =========================================================
-# 🧠 2. FUNÇÕES DE CÁLCULO E CACHE
-# =========================================================
-@st.cache_data
-def get_cached_tcc_curve(pickup, dial, curve_name):
-    i_plot = np.logspace(np.log10(0.1), np.log10(30000), 500)
-    if curve_name not in CURVES: A, B, p = CURVES["IEC Standard Inverse"]
-    else: A, B, p = CURVES[curve_name]
+def calculate_rms(signal):
+    """RMS escalar de um vetor."""
+    return np.sqrt(np.mean(np.square(signal)))
+
+def sliding_rms(signal, fs, window_cycles=1):
+    """RMS deslizante para gráficos no tempo."""
+    window_size = int((fs / FREQ_SISTEMA) * window_cycles)
+    series = pd.Series(signal)
+    # Rolling window, shift para centralizar ou alinhar à direita (ajuste conforme necessidade)
+    rms = series.rolling(window=window_size).apply(lambda x: np.sqrt(np.mean(x**2)))
+    return rms.fillna(0).values
+
+def get_phasor(signal, fs):
+    """Extrai fasor fundamental via DFT."""
+    N = len(signal)
+    if N == 0: return 0j
+    t = np.arange(N) / fs
+    # Kernel para 60Hz
+    kernel = np.exp(-1j * 2 * np.pi * FREQ_SISTEMA * t)
+    X = (2.0 / N) * np.sum(signal * kernel)
+    return X
+
+def get_sym_components(Va, Vb, Vc):
+    """Retorna V0, V1, V2 (Zero, Positiva, Negativa)."""
+    a = np.exp(1j * 2 * np.pi / 3)
+    V0 = (Va + Vb + Vc) / 3.0
+    V1 = (Va + a * Vb + a**2 * Vc) / 3.0
+    V2 = (Va + a**2 * Vb + a * Vc) / 3.0
+    return V0, V1, V2
+
+def calculate_fft_thd(signal, fs, max_h=40):
+    """Retorna V1, V3, THD% e Espectro."""
+    N = len(signal)
+    yf = rfft(signal)
+    xf = rfftfreq(N, 1 / fs)
     
-    safe_Ip = pickup if pickup > 0 else 0.001
-    M = i_plot / safe_Ip
-    t_plot = np.full_like(i_plot, 2000.0, dtype=float)
-    mask = M > 1.001
-    if np.any(mask):
-        denom = np.power(M[mask], p) - 1
-        denom[denom == 0] = 1e-9
-        t_plot[mask] = dial * ( (A / denom) + B )
-    return i_plot, t_plot
-
-def calculate_tcc_single(I_val, Ip, TD, curve_name):
-    if I_val is None: return 2000.0
-    if curve_name not in CURVES: A, B, p = CURVES["IEC Standard Inverse"]
-    else: A, B, p = CURVES[curve_name]
-    M = I_val / (Ip if Ip > 0 else 0.001)
-    if M <= 1.001: return 2000.0
-    val = TD * ((A / ((M**p)-1)) + B)
-    return min(val, 1000.0)
-
-def parse_mat_file(mat_data):
-    parsed = {}
-    t = mat_data.get('t') if 't' in mat_data else mat_data.get('time')
-    if t is None: return None
-    parsed['t'] = t.flatten()
-    for key in mat_data.keys():
-        if key.startswith('__') or key in ['t', 'time', 'm1']: continue
-        base = key
-        tipo = 'raw'
-        if key.endswith('_rms'): base = key[:-4]; tipo = 'rms'
-        elif key.endswith('_phasor'): base = key[:-7]; tipo = 'phasor'
-        elif key.endswith('_seq'): base = key[:-4]; tipo = 'seq'
-        elif key.endswith('_clarke'): base = key[:-7]; tipo = 'clarke'
-        elif key.endswith('_raw'): base = key[:-4]; tipo = 'raw'
-        if base not in parsed: parsed[base] = {}
-        parsed[base][tipo] = mat_data[key]
-    return parsed
-
-@st.cache_data
-def get_downsampled_data(t, signal, target_points=1500):
-    if signal is None: return t, signal
-    n = len(t)
-    if n <= target_points: return t, signal
-    step = int(n / target_points)
-    return t[::step], signal[::step]
-
-# =========================================================
-# 📊 3. PLOTS ESTÁTICOS (PARA O PLAYER PYTHON - ABAS 1 e 3)
-# =========================================================
-def create_waveform_fig(t, sig_rms, title, y_label, time_mark, ref_sig=None, ref_t=None):
-    fig = go.Figure()
-    t_opt, sig_opt = get_downsampled_data(t, sig_rms)
+    # Normalizar magnitude (Pico)
+    mag = 2.0 / N * np.abs(yf)
     
-    fig.add_trace(go.Scatter(x=t_opt, y=sig_opt[:,0], name='A', line=dict(color=THEME['A'], width=1.5)))
-    fig.add_trace(go.Scatter(x=t_opt, y=sig_opt[:,1], name='B', line=dict(color=THEME['B'], width=1.5)))
-    fig.add_trace(go.Scatter(x=t_opt, y=sig_opt[:,2], name='C', line=dict(color=THEME['C'], width=1.5)))
+    # Encontrar índices mais próximos
+    idx_fund = (np.abs(xf - FREQ_SISTEMA)).argmin()
+    idx_3rd = (np.abs(xf - 3 * FREQ_SISTEMA)).argmin()
     
-    if ref_sig is not None and ref_t is not None:
-        tr_opt, sigr_opt = get_downsampled_data(ref_t, ref_sig)
-        fig.add_trace(go.Scatter(x=tr_opt, y=sigr_opt[:,0], name='Ref A', line=dict(color=THEME['A'], dash='dash', width=1)))
-        fig.add_trace(go.Scatter(x=tr_opt, y=sigr_opt[:,1], name='Ref B', line=dict(color=THEME['B'], dash='dash', width=1)))
-        fig.add_trace(go.Scatter(x=tr_opt, y=sigr_opt[:,2], name='Ref C', line=dict(color=THEME['C'], dash='dash', width=1)))
-
-    fig.add_vline(x=time_mark, line_width=2, line_color="white")
-    fig.update_layout(title=title, yaxis_title=y_label, height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
-    return fig
-
-def create_phasor_fig(phasors, rms_vals, title, ref_phasors=None, ref_rms=None):
-    fig = go.Figure()
-    def add_arrows(ph_vals, mag_vals, suffix="", style_dash=None):
-        cols = [THEME['A'], THEME['B'], THEME['C']]
-        names = ['A', 'B', 'C']
-        for k in range(3):
-            ang_rad = np.angle(ph_vals[k])
-            r = mag_vals[k]
-            x_end = r * np.cos(ang_rad); y_end = r * np.sin(ang_rad)
-            fig.add_trace(go.Scatter(x=[0, x_end], y=[0, y_end], mode='lines+markers',
-                marker=dict(size=[0, 8], symbol='arrow-bar-up', angle=0),
-                line=dict(color=cols[k], width=3, dash=style_dash), name=f"{names[k]}{suffix}", showlegend=False))
-
-    if phasors is not None: add_arrows(phasors, rms_vals)
-    if ref_phasors is not None: add_arrows(ref_phasors, ref_rms, " (Ref)", "dot")
-
-    max_r = max(np.max(rms_vals), np.max(ref_rms) if ref_rms is not None else 0) * 1.1
-    if max_r == 0: max_r = 1
-
-    fig.update_layout(title=title, 
-        xaxis=dict(range=[-max_r, max_r], showgrid=True, zeroline=True),
-        yaxis=dict(range=[-max_r, max_r], showgrid=True, zeroline=True, scaleanchor="x", scaleratio=1),
-        height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
-    return fig
-
-def create_seq_fig(seq_vals, title, ref_seq=None):
-    x = ['Pos (+)', 'Neg (-)', 'Zero (0)']
-    y = [abs(seq_vals[1]), abs(seq_vals[2]), abs(seq_vals[0])]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=x, y=y, name="Atual", marker_color=[THEME['V1'], THEME['V2'], THEME['V0']]))
-    if ref_seq is not None:
-         y_ref = [abs(ref_seq[1]), abs(ref_seq[2]), abs(ref_seq[0])]
-         fig.add_trace(go.Bar(x=x, y=y_ref, name="Ref", opacity=0.5, marker_color=[THEME['V1'], THEME['V2'], THEME['V0']], marker_pattern_shape="/"))
-    fig.update_layout(title=title, height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
-    return fig
-
-# =========================================================
-# 🎬 4. ANIMAÇÃO FLUIDA NATIVA (PARA ABA 2)
-# =========================================================
-@st.cache_data
-def create_fluid_animation(t_vec, i_rms, i_clk, pickup, dial, curve_type):
-    # Gera a animação pesada apenas UMA vez e guarda no cache
-    total_points = len(t_vec)
-    n_frames = 150 
-    step = max(1, int(total_points / n_frames))
-    indices = range(0, total_points, step)
+    V1 = mag[idx_fund]
+    V3 = mag[idx_3rd]
     
-    fig = make_subplots(rows=2, cols=1, row_heights=[0.6, 0.4], vertical_spacing=0.15,
-                        subplot_titles=(f"Curva TCC ({curve_type})", "Plano Clarke"))
+    # THD: Raiz da soma dos quadrados das harmônicas / Fundamental
+    # Máscara para harmônicas (exclui DC e Fundamental)
+    harmonics_sq = 0
+    for h in range(2, max_h + 1):
+        idx = (np.abs(xf - h * FREQ_SISTEMA)).argmin()
+        if idx < len(mag):
+            harmonics_sq += mag[idx]**2
+            
+    THD = (np.sqrt(harmonics_sq) / V1) * 100 if V1 > 0 else 0
+    
+    return V1, V3, THD, xf, mag
 
-    cx, cy = get_cached_tcc_curve(pickup, dial, curve_type)
-    fig.add_trace(go.Scatter(x=cx, y=cy, mode='lines', line=dict(color='yellow', width=3), name="Curva TCC", hoverinfo='skip'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=[0.1]*3, y=[0.1]*3, mode='markers+text',
-        marker=dict(size=15, color=[THEME['A'], THEME['B'], THEME['C']], symbol=['circle', 'triangle-up', 'square'], line=dict(width=2, color='white')),
-        text=["Ia", "Ib", "Ic"], textposition="top right", name="Medição"), row=1, col=1)
-    fig.add_vline(x=pickup, line_width=1, line_dash="dash", line_color="gray", row=1, col=1)
+# ==============================================================================
+# 3. INTERFACE LATERAL (INPUTS)
+# ==============================================================================
 
-    max_clk = np.max(np.abs(i_clk)) if i_clk is not None else 10
-    limit = max(10, max_clk * 1.1)
-    if i_clk is not None:
-        fig.add_trace(go.Scatter(x=[0], y=[0], mode='markers',
-            marker=dict(size=14, color=THEME['V1'], line=dict(width=2, color='white')), name="Clarke"), row=2, col=1)
+st.sidebar.header("1. Carregamento de Arquivos")
+st.sidebar.markdown("Carregue até 4 cenários (CSV processado).")
 
-    frames = []
-    for k in indices:
-        vals = i_rms[k] if i_rms is not None else [0.1]*3
-        tcc_x = [max(v, 0.101) for v in vals]
-        tcc_y = [min(calculate_tcc_single(v, pickup, dial, curve_type), 1000) for v in vals]
+uploaded_files = st.sidebar.file_uploader("Selecione arquivos CSV", accept_multiple_files=True)
+data_store = []
+
+if uploaded_files:
+    for i, uploaded_file in enumerate(uploaded_files):
+        if i >= 4: break # Limite de 4
+        st.sidebar.markdown(f"--- **Arquivo {i+1}: {uploaded_file.name}**")
         
-        tcc_text = []
-        for v, t_act in zip(vals, tcc_y):
-            txt = ""
-            if v > 0.5: 
-                txt = f"{v:.1f}A"
-                if v > pickup: txt += f"<br>{t_act:.2f}s"
-            tcc_text.append(txt)
-
-        clk_x = [i_clk[k, 0]] if i_clk is not None else [0]
-        clk_y = [i_clk[k, 1]] if i_clk is not None else [0]
+        # Metadados
+        col1, col2 = st.sidebar.columns(2)
+        topo = col1.selectbox(f"Topologia #{i+1}", ["MRN", "T2F"], key=f"top_{i}")
+        reg = col2.selectbox(f"Regulador #{i+1}", ["Com Reg", "Sem Reg"], key=f"reg_{i}")
+        terra = col1.selectbox(f"Aterramento #{i+1}", ["Com Terra", "Sem Terra"], key=f"gnd_{i}")
+        falta = col2.selectbox(f"Falta #{i+1}", ["Pleno", "A-Terra", "ABC", "AB", "BC"], key=f"flt_{i}")
         
-        frames.append(go.Frame(data=[
-            go.Scatter(x=cx, y=cy), 
-            go.Scatter(x=tcc_x, y=tcc_y, text=tcc_text),
-            go.Scatter(x=clk_x, y=clk_y)
-        ], name=f"{t_vec[k]:.3f}"))
+        # Carregar DF
+        # Assumindo CSV com colunas: tempo, V_800_A, V_800_B, I_800_A, etc.
+        try:
+            df = pd.read_csv(uploaded_file)
+            # Tentar inferir fs
+            t = df.iloc[:, 0].values
+            dt = t[1] - t[0]
+            fs = 1.0 / dt
+            
+            data_store.append({
+                "name": uploaded_file.name,
+                "label": f"{topo} | {reg} | {terra} | {falta}",
+                "df": df,
+                "fs": fs,
+                "meta": {"topo": topo, "reg": reg, "terra": terra, "falta": falta}
+            })
+        except Exception as e:
+            st.error(f"Erro ao ler {uploaded_file.name}: {e}")
 
-    fig.frames = frames
-    fig.update_layout(template="plotly_dark", height=750, margin=dict(t=40, b=40),
-        xaxis1=dict(type="log", range=[np.log10(0.1), np.log10(500000)], title="Corrente (A)", showgrid=True, gridcolor=THEME['grid']),
-        yaxis1=dict(type="log", range=[np.log10(0.01), np.log10(3000)], title="Tempo (s)", showgrid=True, gridcolor=THEME['grid']),
-        xaxis2=dict(range=[-limit, limit], title="Alpha", showgrid=True, gridcolor=THEME['grid'], scaleanchor="y2", scaleratio=1),
-        yaxis2=dict(range=[-limit, limit], title="Beta", showgrid=True, gridcolor=THEME['grid']),
-        updatemenus=[dict(type="buttons", showactive=False, y=1.05, x=1.0, xanchor="right",
-            buttons=[dict(label="▶ Play", method="animate", args=[None, dict(frame=dict(duration=20, redraw=True), fromcurrent=True, mode="immediate")]),
-                     dict(label="⏸ Pause", method="animate", args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))])])],
-        sliders=[dict(steps=[dict(method='animate', args=[[f.name], dict(mode='immediate', frame=dict(duration=0, redraw=True))], label=f.name) for f in frames],
-            active=0, y=0, x=0.1, len=0.9, currentvalue=dict(prefix="Tempo: ", visible=True), pad=dict(t=20))]
-    )
-    return fig
+st.sidebar.markdown("---")
+st.sidebar.header("2. Configuração de Análise")
 
-# =========================================================
-# 🚀 5. CONTROLES E STATE
-# =========================================================
-if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
-if 'ref_data' not in st.session_state: st.session_state['ref_data'] = None
-if 'idx' not in st.session_state: st.session_state['idx'] = 0
-if 'playing' not in st.session_state: st.session_state['playing'] = False
+analise_tipo = st.sidebar.selectbox(
+    "Tipo de Figura (Seção 4)",
+    [
+        "4.4 - Perfil de Tensão (Regime)",
+        "4.5 - Desequilíbrio V2/V1 (Regime)",
+        "4.6 - Tensão RMS vs Tempo",
+        "4.7 - Corrente RMS vs Tempo",
+        "4.8 - Componentes Simétricas (Falta)",
+        "4.9/10 - FFT e Harmônicas",
+        "4.11 - Razão V3/V1 (%)",
+        "4.12 - Corrente Máxima de Falta"
+    ]
+)
 
-with st.sidebar:
-    st.header("⚡ T2F Master")
-    uploaded_files = st.file_uploader("Arquivos .mat", type=['mat'], accept_multiple_files=True)
-    if uploaded_files:
-        for f in uploaded_files:
-            if f.name not in st.session_state['data_store']:
-                try:
-                    raw = sio.loadmat(f, squeeze_me=True)
-                    st.session_state['data_store'][f.name] = parse_mat_file(raw)
-                except: pass
+barra_selecionada = st.sidebar.selectbox("Barra de Interesse", BARRAS_DISPONIVEIS)
+calc_thd = st.sidebar.checkbox("Calcular THD?", value=True)
 
-    opts = list(st.session_state['data_store'].keys())
-    selected_file = st.selectbox("Arquivo", opts) if opts else None
-    
-    # Referência
-    current_data = st.session_state['data_store'].get(selected_file)
-    c1, c2 = st.columns(2)
-    if c1.button("Fixar Ref.") and current_data: st.session_state['ref_data'] = current_data
-    if c2.button("Limpar Ref."): st.session_state['ref_data'] = None
+# Seleção de Janela de Tempo
+st.sidebar.subheader("Janela de Tempo")
+t_min, t_max = 0.0, 0.5
+if data_store:
+    t_max = data_store[0]["df"].iloc[-1, 0]
 
-    # Sinais
-    available_keys = []
-    if current_data:
-        available_keys = [k for k in current_data.keys() if k != 't']
-        available_keys.sort()
-    
-    def_v = next((k for k in available_keys if 'V' in k), None)
-    def_i = next((k for k in available_keys if 'I' in k), None)
-    sel_v = st.selectbox("Tensão", available_keys, index=available_keys.index(def_v) if def_v else 0) if available_keys else None
-    sel_i = st.selectbox("Corrente", available_keys, index=available_keys.index(def_i) if def_i else 0) if available_keys else None
+janela = st.sidebar.slider("Intervalo de Análise (s)", 0.0, float(t_max), (0.3, 0.4))
 
-    # --- PLAYER (CONTROLA ABAS 1 E 3) ---
-    st.divider()
-    st.markdown("#### ⏯️ Player (Abas 1 e 3)")
-    
-    col_p1, col_p2, col_p3 = st.columns(3)
-    if col_p1.button("▶", help="Play"):
-        st.session_state['playing'] = True
-        st.rerun()
-    if col_p2.button("⏸", help="Pause"):
-        st.session_state['playing'] = False
-        st.rerun()
-    if col_p3.button("⏹", help="Reset"):
-        st.session_state['playing'] = False
-        st.session_state['idx'] = 0
-        st.rerun()
-        
-    t_max = len(current_data['t']) - 1 if current_data else 100
-    idx_val = st.slider("Tempo", 0, t_max, st.session_state['idx'], label_visibility="collapsed")
-    if idx_val != st.session_state['idx']:
-        st.session_state['idx'] = idx_val # Atualiza se o usuário mexer no slider
-    
-    speed_step = st.number_input("Velocidade (Step)", 1, 100, 2)
+# ==============================================================================
+# 4. LÓGICA DE GERAÇÃO DE GRÁFICOS
+# ==============================================================================
 
-    # Proteção
-    st.divider()
-    st.subheader("🛡️ Config. Proteção")
-    curve_type = st.selectbox("Curva", list(CURVES.keys()))
-    pickup = st.number_input("Pickup (A)", value=25.0)
-    dial = st.number_input("Dial", value=0.5)
+st.title("Análise de Resultados - Proteção T2F/MRN")
 
-# --- CORPO PRINCIPAL ---
-if not current_data or not sel_v or not sel_i:
-    st.info("Carregue arquivos e selecione sinais.")
+if not data_store:
+    st.info("Por favor, carregue os arquivos CSV na barra lateral para começar.")
     st.stop()
 
-# Dados e Índices
-t_vec = current_data['t']
-curr_idx = st.session_state['idx']
-time_curr = t_vec[curr_idx]
-
-v_data = current_data[sel_v]; i_data = current_data[sel_i]
-v_rms = v_data.get('rms'); i_rms = i_data.get('rms')
-i_clk = i_data.get('clarke')
-v_ph = v_data.get('phasor'); i_ph = i_data.get('phasor')
-v_seq = v_data.get('seq'); i_seq = i_data.get('seq')
-
-# Referência
-ref_v_rms, ref_i_rms, ref_t = None, None, None
-ref_v_ph, ref_i_ph, ref_v_seq, ref_i_seq = None, None, None, None
-if st.session_state['ref_data']:
-    rd = st.session_state['ref_data']; ref_t = rd['t']
-    ref_idx = min(curr_idx, len(ref_t)-1)
-    if sel_v in rd: ref_v_rms = rd[sel_v].get('rms'); ref_v_ph = rd[sel_v].get('phasor'); ref_v_seq = rd[sel_v].get('seq')
-    if sel_i in rd: ref_i_rms = rd[sel_i].get('rms'); ref_i_ph = rd[sel_i].get('phasor'); ref_i_seq = rd[sel_i].get('seq')
-
-# --- ABAS ---
-tab1, tab2, tab3 = st.tabs(["📊 Análise", "🛡️ Proteção (Fluida)", "🔁 Comparação"])
-
-# ABA 1: ANÁLISE (CONTROLADA PELO PLAYER PYTHON)
-with tab1:
-    st.markdown(f"**Tempo:** `{time_curr:.4f}s` (Use o player lateral)")
-    c1, c2 = st.columns(2)
-    c1.plotly_chart(create_waveform_fig(t_vec, v_rms, "Tensão (RMS)", "V", time_curr), use_container_width=True)
-    c2.plotly_chart(create_waveform_fig(t_vec, i_rms, "Corrente (RMS)", "A", time_curr), use_container_width=True)
+# Função auxiliar para pegar dados de uma barra específica do DF
+def get_bus_data(df, bus):
+    # Procura colunas. Ex: V_800_A ou v_800_a ou Voltage_800_A...
+    # Ajuste este padrão conforme o seu CSV
+    cols = df.columns
+    # Tenta padrão genérico V_{bus}_A
+    v_cols = [c for c in cols if f"V_{bus}" in c or f"v_{bus}" in c]
+    i_cols = [c for c in cols if f"I_{bus}" in c or f"i_{bus}" in c]
     
-    val_v_ph = v_ph[curr_idx] if v_ph is not None else [0]*3
-    val_i_ph = i_ph[curr_idx] if i_ph is not None else [0]*3
-    val_v_now = v_rms[curr_idx] if v_rms is not None else [0]*3
-    val_i_now = i_rms[curr_idx] if i_rms is not None else [0]*3
+    # Ordenar A, B, C
+    v_cols.sort() 
+    i_cols.sort()
     
-    c3, c4 = st.columns(2)
-    c3.plotly_chart(create_phasor_fig(val_v_ph, val_v_now, "Fasores Tensão"), use_container_width=True)
-    c4.plotly_chart(create_phasor_fig(val_i_ph, val_i_now, "Fasores Corrente"), use_container_width=True)
+    if len(v_cols) < 3 or len(i_cols) < 3:
+        return None, None
     
-    val_v_seq = v_seq[curr_idx] if v_seq is not None else [0]*3
-    val_i_seq = i_seq[curr_idx] if i_seq is not None else [0]*3
-    c5, c6 = st.columns(2)
-    c5.plotly_chart(create_seq_fig(val_v_seq, "Sequência Tensão"), use_container_width=True)
-    c6.plotly_chart(create_seq_fig(val_i_seq, "Sequência Corrente"), use_container_width=True)
+    # Retorna matrizes (N, 3)
+    V = df[v_cols].values
+    I = df[i_cols].values
+    return V, I
 
-# ABA 2: PROTEÇÃO (ANIMAÇÃO FLUIDA NATIVA)
-with tab2:
-    st.caption("ℹ️ Esta aba usa um player interno independente para garantir 60 FPS.")
-    with st.spinner("Preparando animação fluida..."):
-        fig_anim = create_fluid_animation(t_vec, i_rms, i_clk, pickup, dial, curve_type)
-        st.plotly_chart(fig_anim, use_container_width=True)
+# --- LÓGICA POR TIPO DE FIGURA ---
 
-# ABA 3: COMPARAÇÃO (CONTROLADA PELO PLAYER PYTHON)
-with tab3:
-    st.markdown(f"**Tempo:** `{time_curr:.4f}s` (Use o player lateral)")
-    if st.session_state['ref_data'] is None:
-        st.warning("Defina uma Referência no painel lateral.")
-    else:
-        k1, k2 = st.columns(2)
-        k1.plotly_chart(create_waveform_fig(t_vec, v_rms, "Comp V", "V", time_curr, ref_v_rms, ref_t), use_container_width=True)
-        k2.plotly_chart(create_waveform_fig(t_vec, i_rms, "Comp I", "A", time_curr, ref_i_rms, ref_t), use_container_width=True)
+if analise_tipo == "4.4 - Perfil de Tensão (Regime)":
+    st.subheader(f"Figura 4.4 - Perfil de Tensão RMS (Janela: {janela})")
+    
+    fig = go.Figure()
+    
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        # Filtrar janela
+        mask = (df.iloc[:,0] >= janela[0]) & (df.iloc[:,0] <= janela[1])
+        df_win = df.loc[mask]
         
-        # Dados Ref
-        rvp = ref_v_ph[ref_idx] if ref_v_ph is not None else [0]*3
-        rip = ref_i_ph[ref_idx] if ref_i_ph is not None else [0]*3
-        rvn = ref_v_rms[ref_idx] if ref_v_rms is not None else [0]*3
-        rin = ref_i_rms[ref_idx] if ref_i_rms is not None else [0]*3
-
-        k3, k4 = st.columns(2)
-        k3.plotly_chart(create_phasor_fig(val_v_ph, val_v_now, "Comp Fasor V", rvp, rvn), use_container_width=True)
-        k4.plotly_chart(create_phasor_fig(val_i_ph, val_i_now, "Comp Fasor I", rip, rin), use_container_width=True)
+        y_vals = []
+        x_vals = []
         
-        rvs = ref_v_seq[ref_idx] if ref_v_seq is not None else [0]*3
-        ris = ref_i_seq[ref_idx] if ref_i_seq is not None else [0]*3
-        k5, k6 = st.columns(2)
-        k5.plotly_chart(create_seq_fig(val_v_seq, "Comp Seq V", rvs), use_container_width=True)
-        k6.plotly_chart(create_seq_fig(val_i_seq, "Comp Seq I", ris), use_container_width=True)
+        for bus in BARRAS_DISPONIVEIS:
+            V, _ = get_bus_data(df_win, bus)
+            if V is not None:
+                # RMS médio das 3 fases
+                rms_abc = [calculate_rms(V[:, i]) for i in range(3)]
+                y_vals.append(np.mean(rms_abc))
+                x_vals.append(bus)
+        
+        fig.add_trace(go.Scatter(x=x_vals, y=y_vals, mode='lines+markers', name=item["label"]))
+        
+    fig.update_layout(xaxis_title="Barras", yaxis_title="Tensão RMS (V/pu)")
+    st.plotly_chart(fig, use_container_width=True)
 
-# =========================================================
-# 🔄 LOOP DE ANIMAÇÃO DO PLAYER PYTHON
-# =========================================================
-if st.session_state['playing']:
-    if st.session_state['idx'] < len(t_vec) - 1:
-        st.session_state['idx'] += speed_step
-        st.rerun() # Atualiza a tela para o próximo frame
-    else:
-        st.session_state['playing'] = False
-        st.rerun()
+
+elif analise_tipo == "4.5 - Desequilíbrio V2/V1 (Regime)":
+    st.subheader(f"Figura 4.5 - Desequilíbrio V2/V1 (Janela: {janela})")
+    
+    fig = go.Figure()
+    
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        mask = (df.iloc[:,0] >= janela[0]) & (df.iloc[:,0] <= janela[1])
+        df_win = df.loc[mask]
+        
+        x_vals = []
+        y_vals = []
+        
+        for bus in BARRAS_DISPONIVEIS:
+            V, _ = get_bus_data(df_win, bus)
+            if V is not None:
+                # Fasores fundamentais
+                Va = get_phasor(V[:, 0], fs)
+                Vb = get_phasor(V[:, 1], fs)
+                Vc = get_phasor(V[:, 2], fs)
+                _, V1, V2 = get_sym_components(Va, Vb, Vc)
+                
+                ratio = (np.abs(V2) / np.abs(V1)) * 100 if np.abs(V1) > 0 else 0
+                x_vals.append(bus)
+                y_vals.append(ratio)
+        
+        fig.add_trace(go.Bar(x=x_vals, y=y_vals, name=item["label"]))
+        
+    fig.update_layout(barmode='group', xaxis_title="Barras", yaxis_title="V2/V1 (%)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+elif analise_tipo == "4.6 - Tensão RMS vs Tempo":
+    st.subheader(f"Figura 4.6 - Tensão RMS no Tempo | Barra {barra_selecionada}")
+    
+    fig = go.Figure()
+    
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        t = df.iloc[:, 0].values
+        V, _ = get_bus_data(df, barra_selecionada)
+        
+        if V is not None:
+            # RMS Deslizante Fase A (ou média, aqui plotando Fase A como exemplo)
+            v_rms = sliding_rms(V[:, 0], fs)
+            
+            fig.add_trace(go.Scatter(x=t, y=v_rms, mode='lines', name=f"{item['label']} (Fase A)"))
+            
+    # Linha de Falta
+    fig.add_vline(x=INSTANTE_FALTA, line_width=2, line_dash="dash", line_color="red", annotation_text="Falta")
+    fig.update_layout(xaxis_title="Tempo (s)", yaxis_title="Tensão RMS (V)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+elif analise_tipo == "4.7 - Corrente RMS vs Tempo":
+    st.subheader(f"Figura 4.7 - Corrente RMS no Tempo | Barra {barra_selecionada}")
+    # Igual ao 4.6 mas com Corrente
+    fig = go.Figure()
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        t = df.iloc[:, 0].values
+        _, I = get_bus_data(df, barra_selecionada)
+        if I is not None:
+            i_rms = sliding_rms(I[:, 0], fs)
+            fig.add_trace(go.Scatter(x=t, y=i_rms, mode='lines', name=f"{item['label']} (Fase A)"))
+            
+    fig.add_vline(x=INSTANTE_FALTA, line_width=2, line_dash="dash", line_color="red")
+    fig.update_layout(xaxis_title="Tempo (s)", yaxis_title="Corrente RMS (A)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+elif analise_tipo == "4.8 - Componentes Simétricas (Falta)":
+    st.subheader(f"Figura 4.8 - Componentes Simétricas de Corrente | Barra {barra_selecionada}")
+    st.markdown(f"Analisando na janela selecionada: {janela}")
+    
+    labels = []
+    i0_vals, i1_vals, i2_vals = [], [], []
+    
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        mask = (df.iloc[:,0] >= janela[0]) & (df.iloc[:,0] <= janela[1])
+        df_win = df.loc[mask]
+        
+        _, I = get_bus_data(df_win, barra_selecionada)
+        if I is not None:
+            Ia = get_phasor(I[:, 0], fs)
+            Ib = get_phasor(I[:, 1], fs)
+            Ic = get_phasor(I[:, 2], fs)
+            I0, I1, I2 = get_sym_components(Ia, Ib, Ic)
+            
+            labels.append(item["label"])
+            i0_vals.append(np.abs(I0))
+            i1_vals.append(np.abs(I1))
+            i2_vals.append(np.abs(I2))
+            
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=labels, y=i0_vals, name='I0 (Zero)'))
+    fig.add_trace(go.Bar(x=labels, y=i1_vals, name='I1 (Positiva)'))
+    fig.add_trace(go.Bar(x=labels, y=i2_vals, name='I2 (Negativa)'))
+    
+    fig.update_layout(barmode='group', title="Magnitude Componentes Simétricas (A)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+elif analise_tipo == "4.9/10 - FFT e Harmônicas":
+    st.subheader(f"Análise Espectral (FFT) | Barra {barra_selecionada}")
+    st.markdown("Visualizando espectro da Fase A na janela selecionada.")
+    
+    fig = go.Figure()
+    stats = []
+    
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        mask = (df.iloc[:,0] >= janela[0]) & (df.iloc[:,0] <= janela[1])
+        df_win = df.loc[mask]
+        
+        V, _ = get_bus_data(df_win, barra_selecionada)
+        if V is not None:
+            # Fase A
+            sig = V[:, 0]
+            V1, V3, thd_val, freqs, mag = calculate_fft_thd(sig, fs)
+            
+            stats.append({
+                "Cenário": item["label"],
+                "V1 (V)": f"{V1:.2f}",
+                "V3 (V)": f"{V3:.2f}",
+                "V3/V1 (%)": f"{(V3/V1*100):.2f}",
+                "THD (%)": f"{thd_val:.2f}"
+            })
+            
+            # Plotar apenas até 500Hz para clareza
+            mask_freq = freqs <= 500
+            fig.add_trace(go.Scatter(x=freqs[mask_freq], y=mag[mask_freq], mode='lines', name=item["label"]))
+            
+    st.plotly_chart(fig, use_container_width=True)
+    
+    if calc_thd:
+        st.write("### Tabela de Métricas Harmônicas")
+        st.dataframe(pd.DataFrame(stats))
+
+
+elif analise_tipo == "4.11 - Razão V3/V1 (%)":
+    st.subheader("Figura 4.11 - Razão V3/V1 (%) por Cenário")
+    # Similar ao 4.8 mas com V3/V1
+    labels, vals = [], []
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        mask = (df.iloc[:,0] >= janela[0]) & (df.iloc[:,0] <= janela[1])
+        V, _ = get_bus_data(df.loc[mask], barra_selecionada)
+        if V is not None:
+            V1, V3, _, _, _ = calculate_fft_thd(V[:, 0], fs)
+            ratio = (V3/V1)*100 if V1 > 0 else 0
+            labels.append(item["label"])
+            vals.append(ratio)
+            
+    fig = go.Figure(go.Bar(x=labels, y=vals, marker_color='indianred'))
+    fig.update_layout(title=f"Distorção de 3ª Harmônica - Barra {barra_selecionada}", yaxis_title="V3/V1 (%)")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+elif analise_tipo == "4.12 - Corrente Máxima de Falta":
+    st.subheader("Figura 4.12 - Corrente Máxima de Falta (Janela Selecionada)")
+    # Calcula o MAX do RMS dentro da janela
+    
+    labels, imax_vals = [], []
+    for item in data_store:
+        df = item["df"]
+        fs = item["fs"]
+        mask = (df.iloc[:,0] >= janela[0]) & (df.iloc[:,0] <= janela[1])
+        df_win = df.loc[mask]
+        
+        _, I = get_bus_data(df_win, barra_selecionada)
+        if I is not None:
+            # RMS da janela inteira ou pico do RMS deslizante na janela?
+            # Geralmente é o pico do RMS durante a falta
+            i_rms_abc = [np.max(sliding_rms(I[:, i], fs)) for i in range(3)]
+            max_current = np.max(i_rms_abc)
+            
+            labels.append(item["label"])
+            imax_vals.append(max_current)
+            
+    fig = go.Figure(go.Bar(x=labels, y=imax_vals))
+    fig.update_layout(title=f"I_Falta_Max - Barra {barra_selecionada}", yaxis_title="Corrente (A)")
+    st.plotly_chart(fig, use_container_width=True)
+
+# ==============================================================================
+# 5. EXPORTAÇÃO
+# ==============================================================================
+st.markdown("---")
+if st.button("Exportar Dados da Visualização Atual (CSV)"):
+    # Lógica simples para baixar o que foi calculado (pode ser expandido)
+    st.info("Funcionalidade de exportação pronta para implementação baseada no DataFrame exibido acima.")
