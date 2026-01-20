@@ -1,0 +1,260 @@
+MODELAGEM E TESTES NO SISTEMA IEEE 34 BARRAS EM AMBIENTE MATLAB/SIMULINK COM RELIGADORES AUTOMÁTICOS
+Nesta seção apresenta-se a modelagem parcial do sistema IEEE 34 barras em topologia trifásica a dois fios (T2F), inserida especificamente entre as barras 816 e 822, com o objetivo de possibilitar estudos de curto-circuito e coordenação de proteção em uma configuração representativa de rede de distribuição (Kersting, 2001). A inserção da topologia T2F neste trecho possibilita analisar, simultaneamente, a transição entre uma rede originalmente monofásica com retorno pelo neutro e uma configuração repotencializada para operação trifásica, sem demandar alterações significativas a infraestrutura física existente, utilizando como referência o modelo adaptado para o ambiente MATLAB/Simulink.
+A partir dessa referência, foram considerados dois cenários principais para avaliação: um sistema operando sem regulador de tensão no ramo em estudo e outro com a presença do regulador, visando investigar como esse equipamento influencia os níveis de corrente de falta, os perfis de tensão e, consequentemente, a atuação e a coordenação dos dispositivos de proteção, em especial os religadores. Essa abordagem está em conformidade com práticas recomendadas para testes de proteção em ambientes de simulação digital, nas quais se avalia o desempenho dos religadores sob diferentes condições de regulação, carregamento e topologia de rede (Khalid; Others, 2021; Schweitzer Engineering Laboratories, 2022).
+No ambiente MATLAB/Simulink, a modelagem do trecho 800–816–822 em T2F foi implementada utilizando blocos do Simscape Electrical e do Simulink, permitindo tanto a representação detalhada do sistema elétrico quanto a integração direta com algoritmos de proteção, lógica de religamento e rotinas de pós-processamento. A Figura 21 ilustra a configuração do trecho 800–816–822 modelado em T2F sem regulador de tensão, enquanto a Figura 22 apresenta a mesma configuração com o regulador inserido no circuito. Essas duas variantes constituem a base para comparação sistemática dos resultados de curto-circuito e para a análise do impacto do regulador sobre o perfil de faltas e sobre a seletividade/coordenação dos religadores instalados ao longo do alimentador.
+ 
+Figura 39 – Configuração Barra 800-816-822 modelo MRN, com Regulador.
+ 
+Figura 40 – Configuração Barra 800-816-822 modelo MRN, sem Regulador.
+ 
+Figura 41 – Configuração Barra 800-816-822 modelo T2F, com Regulador.
+ 
+Figura 42 – Configuração Barra 800-816-822 modelo T2F, sem Regulador.
+Esse arranjo metodológico possibilita, portanto, avaliar sistematicamente como a repotencialização para T2F e a presença do regulador de tensão influenciam a magnitude das correntes de curto-circuito, o esforço sobre os dispositivos de proteção e a eficácia da filosofia de coordenação adotada na rede.
+Os dois conjuntos de curvas exibidos nas janelas (US: U1–U5 e IEC: C1–C5) são precisamente as curvas de tempo inverso que os religadores utilizarão nos testes (por exemplo, U1 – Moderately Inverse, U3 – Very Inverse, C1 – Standard Inverse, C2 – Very Inverse etc.). Nos ensaios propostos, serão instalados dois religadores ao longo do trecho modelado em T2F no MATLAB/Simulink. Para cada religador, serão configuradas curvas distintas (por exemplo, um com curva US tipo U1 – Moderately Inverse e outro com curva IEC tipo C2 – Very Inverse), explorando diferentes filosofias de coordenação tempo–corrente. O objetivo consiste em reproduzir, em ambiente de simulação, situações típicas de proteção em redes de distribuição, em que a curva mais rápida e com maior declividade é utilizada a jusante, enquanto uma curva mais lenta ou menos agressiva é aplicada a montante visando assegurar seletividade.
+Os testes realizar-se-ão em duas etapas principais:
+	Etapa 1 – Sistema com dois religadores: o trecho T2F entre 816 e 822 opera com os dois religadores ativos, cada um com sua curva US ou IEC previamente selecionada. Aplicam-se faltas no T2F (trifásicas e bifásicas, conforme a Tabela 2) em diferentes posições ao longo da linha, avaliando-se tempos de atuação, seletividade e coordenação entre os dois dispositivos.
+	Etapa 2 – Sistema com apenas um religador: em seguida, um dos religadores é removido da configuração (ou colocado em modo bloqueado), mantendo-se o outro com a mesma curva e ajustes. Repete-se a mesma bateria de faltas, possibilitando comparar sistematicamente o desempenho do sistema com dois dispositivos versus apenas um, tanto em termos de tempo de eliminação da falta quanto de esforço térmico e corrente vista pelo equipamento.
+Com essa estratégia, será possível identificar qual combinação de religadores e curvas (US U1–U5 ou IEC C1–C5) apresenta o melhor comportamento para faltas no trecho T2F, considerando critérios como:
+	rapidez de atuação;
+	seletividade entre religadores;
+	coordenação com o restante da proteção do alimentador;
+	impacto sobre o restante da rede durante faltas no T2F.
+METODOLOGIA DOS ENSAIOS COM RELIGADORES
+Nesta etapa, são avaliados o desempenho e a coordenação de proteção de dois religadores instalados ao longo do trecho modelado em T2F entre as barras 800–816–822. O objetivo principal é verificar como diferentes combinações de curvas tempo–corrente e diferentes arranjos de religadores influenciam a eliminação de faltas no trecho T2F e a seletividade da proteção, tomando como referência práticas consolidadas de proteção em alimentadores de distribuição (Didatic Overcurrent, 2020; IEEE, 2024; Schweitzer Engineering Laboratories, 2022).
+Os ensaios são organizados em duas dimensões principais:
+	Tipos de falta e localização ao longo do T2F;
+	Configuração da proteção com um ou dois religadores ativos.
+Em cada cenário, os dois religadores são modelados com curvas de tempo inverso padronizadas dos tipos IEEE/ANSI e IEC, compatíveis com as equações de curvas normalizadas definidas em guias de aplicação de proteção e em práticas industriais (KERSTING, 2001; SCHWEITZER ENGINEERING LABORATORIES, 2022). São considerados, de forma análoga às aplicações práticas:
+	religador a montante ajustado com curva moderadamente ou normalmente inversa;
+	religador a jusante ajustado com curva muito inversa ou extremamente inversa,
+buscando reproduzir a filosofia típica em que o dispositivo mais próximo da falta atua mais rápido, enquanto o dispositivo a montante fornece retaguarda com maior seletividade.
+Para cada religador, são mantidos constantes, em uma primeira fase, o valor de corrente de pick up (em pu) e o dial de tempo (TDS/TD), de modo que a comparação entre cenários se concentre principalmente na influência:
+	do tipo de curva adotada (mais ou menos inversa);
+	da presença ou ausência de um dos religadores.
+Em uma segunda fase, abre se espaço para pequenos ajustes de TDS/TD, conforme práticas tradicionais de coordenação de sobrecorrente e religadores em sistemas de distribuição, nas quais o ajuste fino dos temporizadores é utilizado para garantir margens de coordenação adequadas sem comprometer a rapidez de atuação (Kersting, 2001; Khalid; Others, 2021).
+Os testes são divididos em duas etapas principais:
+	Etapa A – Sistema com dois religadores ativos: Ambos os religadores permanecem em operação no trecho 800–816–822. São aplicadas, no T2F, as cinco condições definidas na Tabela 2 (pleno funcionamento e quatro tipos de faltas sólidas), com varredura da posição da falta ao longo da linha (1 % a 99 % do comprimento). Nesta etapa avaliam se:
+	os tempos de atuação de cada religador;
+	a seletividade entre religador a montante e religador a jusante;
+	a correspondência entre a zona de atuação prevista pelas curvas e o ponto real da falta, em linha com estudos de coordenação em sistemas de distribuição (Kersting, 2001).
+	Etapa B – Sistema com apenas um religador ativo: Em seguida, um dos religadores é retirado da operação (desativado ou bloqueado), mantendo se o outro com a mesma curva e ajustes de corrente e TDS/TD. Repete se exatamente a mesma bateria de ensaios (tipos de falta e posições ao longo do T2F). Essa etapa permite comparar diretamente:
+	se a ausência do segundo religador compromete a seletividade ou aumenta significativamente o tempo de eliminação da falta;
+	se um único religador, devidamente ajustado, é suficiente para proteger o trecho T2F dentro de critérios aceitáveis de segurança e continuidade de serviço, conforme discutido em estudos de testes em ambiente de simulação e HIL (Khalid; Others, 2021; Schweitzer Engineering Laboratories, 2022).
+Para cada combinação de cenário (dois religadores × um religador), tipo de falta e posição ao longo da linha, são extraídas as seguintes grandezas de interesse:
+	corrente de curto circuito vista por cada religador;
+	tempo de atuação calculado pela curva para aquele valor de corrente;
+	sequência de atuação (qual religador opera primeiro, se há sobreposição de zonas ou atuação indevida);
+	impacto sobre as tensões nas barras 800, 816 e 822.
+A partir desses resultados, torna se possível:
+	identificar qual configuração de religadores e curvas apresenta melhor desempenho para faltas no trecho T2F;
+	avaliar se a presença de dois religadores traz ganhos reais de seletividade e rapidez de atuação em comparação com a solução de um único religador;
+	verificar se há risco de miscoordenação ou de atuação excessiva em trechos não afetados, em alinhamento com a literatura sobre coordenação de proteção em alimentadores com religadores e relés de sobrecorrente (Kersting, 2001; Khalid; Others, 2021; Schweitzer Engineering Laboratories, 2022).
+Essa metodologia fornece, portanto, uma base sistemática para discutir, nos capítulos de resultados, qual arranjo de proteção é mais adequado para a rede T2F proposta, considerando tanto critérios técnicos (corrente, tempo, seletividade) quanto o contexto de aplicação em redes de distribuição reais.
+Configuração dos religadores e curvas de proteção
+Em cada cenário, os dois religadores são modelados em MATLAB/Simulink com elementos de sobrecorrente de tempo inverso, implementando diretamente as equações normalizadas das normas IEC 60255 151 e IEEE C37.112 para curvas IEC (C1–C3) e IEEE/US (U1–U3):
+	Definimos o fator de multiplicação de corrente
+	 	(5.1)
+onde I é a corrente medida (RMS) e I_s é a corrente de pick up.
+	Curvas IEC (60255 151)
+A forma geral da curva IEC é:
+	 	(5.2)
+	IEC Standard Inverse (C1):
+	 	(5.3)
+	IEC Very Inverse (C2):
+	 	(5.4)
+	IEC Extremely Inverse (C3):
+	 	(5.5)
+	Curvas IEEE/ANSI (C37.112)
+A forma geral da curva IEEE inversa é:
+	 	(5.6)
+	IEEE Moderately Inverse (U1):
+	 	(5.7)
+	IEEE Very Inverse (U2):
+	 	(5.8)
+	IEEE Extremely Inverse (U3):
+	 	(5.9)
+Essas equações são implementadas em blocos MATLAB Function no Simulink, recebendo I, I_s, TMS/TD e o tipo de curva, e devolvendo o tempo de operação t(M) a ser integrado até o disparo do religador.
+Assim, são avaliadas combinações como, por exemplo:
+	religador a montante com curva moderadamente/normally inverse (IEC Standard ou IEEE Moderately Inverse);
+	religador a jusante com curva muito ou extremamente inversa (IEC Very/Extremely Inverse ou IEEE Very/Extremely Inverse),
+reproduzindo a filosofia típica em que o dispositivo mais próximo da falta atua mais rápido, enquanto o dispositivo a montante fornece retaguarda com maior seletividade.
+Na primeira fase dos ensaios, para cada religador mantêm se constantes o valor de corrente de pick up I_s e o dial de tempo (TMS ou TD), para que a comparação entre cenários se concentre na influência:
+	do tipo de curva (IEC × IEEE, mais ou menos inversa);
+	da presença ou ausência de um dos religadores.
+Numa segunda fase, são feitos pequenos ajustes de TMS/TD para refino da coordenação, seguindo a prática de coordenação ótima de relés em alimentadores de distribuição.
+Para melhor visualização utiliza-se a transformada de Clarke na forma power invariant é implementada pela função clarke_transform, que projeta as correntes i_a,i_b,i_c nos eixos ortogonais i_\alpha,i_\beta de acordo com
+	 	(5.10)
+permitindo visualizar, no plano \alpha\beta, a trajetória do vetor de corrente ao longo do tempo, que assume forma aproximadamente circular em regime equilibrado e se deforma em elipses ou padrões assimétricos na presença de faltas.
+ANÁLISE DE RESULTADOS OBTIDOS POR SIMULAÇÃO
+Nesta subseção analisam‑se os resultados de proteção obtidos por simulação para o trecho T2F entre as barras 800–816–822, considerando as quatro combinações de condicionamento de tensão (com e sem regulador) e de retorno (com e sem terra) exclusivamente na topologia trifásica a dois fios. A partir dos sinais de tensão, corrente e tempo de cada um é extraídos do modelo em MATLAB/Simulink, são avaliados, em ambiente Python, os valores eficazes dinâmicos, envelopes máximos, componentes simétricas e trajetórias de Clarke das correntes no T2F, de modo a quantificar como essas variações de configuração influenciam a magnitude das correntes de curto‑circuito, o desequilíbrio de tensão local e o esforço imposto aos religadores ajustados com curvas IEC/IEEE. Com base nessas grandezas, a discussão concentra‑se nos aspectos de seletividade, coordenação tempo–corrente e sensibilidade dos religadores frente às diferentes condições de falta aplicadas ao trecho T2F.
+Análise de curto-circuito AB
+As Figura 43 e Figura 44 apresentam os perfis de tensão trifásica obtidos em simulação para a falta entre fases A e B no trecho T2F, considerando as quatro combinações de interesse: operação com regulador e com retorno por terra, com regulador sem terra, sem regulador com terra e sem regulador e sem terra. Os sinais são mostrados em duas seções do alimentador, imediatamente antes e imediatamente depois do transformador isolador, permitindo avaliar simultaneamente o efeito da regulação de tensão e do caminho de retorno sobre os afundamentos de tensão locais e sobre o desacoplamento proporcionado pelo transformador. Em todos os casos, o instante de aplicação da falta é indicado por uma linha tracejada vertical, facilitando a correlação temporal entre o regime pré falta, a condição de defeito e a remoção posterior da falta pela atuação dos dispositivos de proteção.
+
+ 
+Figura 43 – Tensões de fase antes do transformador isolador para falta AB no trecho T2F Fonte: Autor.
+Na Figura 43, que mostra a tensão antes do transformador isolador, observa se que as fases A e B sofrem um afundamento pronunciado a partir de t\approx0,18\mathrm{\thinsps}, enquanto a fase C permanece próxima ao valor pré falta, comportamento característico de uma falta bifásica. Os cenários com regulador apresentam tensões pré falta mais elevadas e perfil mais uniforme ao longo do tempo, refletindo o ajuste do tap para compensar a queda de tensão no alimentador T2F; por outro lado, nos casos sem regulador verifica se um nível médio de tensão ligeiramente inferior e um degrau de afundamento menos acentuado em módulo, o que se traduz em correntes de falta ligeiramente menores nas análises subsequentes.
+ 
+Figura 44 – Tensões de fase depois do transformador isolador para falta AB no trecho T2F. Fonte: Autor.
+A Figura 44 mostra as tensões trifásicas na barra a jusante do transformador isolador para a mesma falta AB, evidenciando o efeito de desacoplamento do transformador entre o lado de alta tensão T2F e o circuito a jusante. Novamente, a falta entre as fases A e B produz um afundamento seletivo nessas fases, com a fase C praticamente inalterada, porém com níveis de tensão absolutos menores devido à relação de transformação do transformador. Comparando se os quatro cenários, nota se que o regulador continua condicionando o patamar de tensão pré falta, mas o transformador isolador atenua parcialmente as diferenças entre as configurações com e sem terra, de forma que o perfil de tensão visto pela carga torna se menos sensível às variações no caminho de retorno do trecho T2F.
+As Figura 45 e Figura 46 sintetizam o comportamento das correntes trifásicas durante a falta AB aplicada ao trecho T2F, considerando simultaneamente a influência do regulador de tensão e do caminho de retorno (com e sem terra), bem como o efeito do transformador isolador sobre os níveis de curto circuito. Nessas figuras, apresentam se, de forma comparativa, as correntes de fase medidas imediatamente antes e depois do transformador, permitindo observar, em um único painel, como a mesma condição de falta resulta em patamares distintos de corrente a montante e a jusante e, consequentemente, em diferentes exigências para a atuação e a coordenação dos religadores posicionados ao longo do alimentador.
+ 
+Figura 45 – Corrente de fase antes do transformador isolador para falta AB no trecho T2F. Fonte: Autor.
+A Figura 45 apresenta as correntes de fase medidas imediatamente antes do transformador isolador para a falta AB no trecho T2F, nas quatro combinações de regulador e caminho de retorno. Observa se que a aplicação da falta em t\approx0,18\mathrm{\thinsps} provoca um patamar de corrente significativamente mais elevado na fase A, seguido pela fase B, enquanto a fase C permanece próxima ao nível de carga, caracterizando a natureza bifásica do defeito. A presença do regulador resulta em correntes de falta ligeiramente maiores, coerentes com o maior nível de tensão pré falta na barra de origem, ao passo que a condição sem terra aumenta a impedância de retorno e reduz discretamente a magnitude das correntes em todas as fases.
+ 
+Figura 46 – Corrente de fase depois do transformador isolador para falta AB no trecho T2F. Fonte: Autor.
+Na Figura 46 são mostradas as correntes trifásicas após o transformador isolador, evidenciando o efeito da transformação sobre os níveis de curto circuito vistos pelas cargas a jusante. Mantém se a assimetria entre as fases A e B, mas com correntes absolutas mais elevadas devido à relação de transformação e à menor impedância do circuito secundário, sobretudo nos cenários com regulador e retorno por terra, que produzem o maior esforço térmico sobre os dispositivos de proteção locais. Essa diferença entre as correntes antes e depois do transformador é relevante para a coordenação dos religadores, uma vez que a curva aplicada a montante deve fornecer retaguarda sem se sobrepor à zona de atuação do dispositivo instalado no lado de baixa tensão.
+As Figura 47 e Figura 48 complementam a avaliação temporal de tensões e correntes por meio da representação vetorial das correntes de linha no plano iαiβ, obtida pela transformada de Clarke na forma power invariant. Essas trajetórias permitem visualizar de maneira compacta o grau de desequilíbrio entre as fases e a variação da magnitude do vetor de corrente durante a falta AB, comparando diretamente os quatro cenários de operação (com/sem regulador e com/sem retorno por terra) antes e depois do transformador isolador.
+ 
+Figura 47 – Trajetórias Clarke das correntes antes do transformador isolador para falta AB no trecho T2F. Fonte: Autor.
+Na Figura 47, correspondente ao ponto de medição antes do transformador isolador, observa se que o regime pré falta é representado por uma circunferência de menor raio centrada na origem, associada à condição praticamente equilibrada do trecho T2F. Após a aplicação da falta AB, a trajetória passa a descrever uma elipse alongada predominantemente no eixo i_\alpha, indicando a predominância de componentes de sequência positiva e negativa alinhadas com as fases A e B e uma contribuição relativamente pequena de componente homopolar. A presença do regulador e do retorno por terra aumenta o raio dessa elipse, refletindo as maiores correntes de curto circuito, enquanto os cenários sem regulador e/ou sem terra apresentam elipses de menor amplitude, coerentes com as correntes reduzidas discutidas nas figuras anteriores.
+ 
+Figura 48 – Trajetórias Clarke das correntes depois do transformador isolador para falta AB no trecho T2F. Fonte: Autor.
+A Figura 48 mostra as trajetórias Clarke das correntes após o transformador isolador, evidenciando o impacto da transformação sobre o vetor de corrente visto pelas cargas a jusante. A forma elíptica permanece, confirmando que o tipo de falta continua essencialmente bifásico, mas o raio da trajetória aumenta de forma significativa, em especial nos casos com regulador e retorno por terra, devido à menor impedância efetiva do circuito secundário. Essa ampliação do vetor de corrente em iαiβ reforça a necessidade de ajustes coordenados das curvas IEC/IEEE dos religadores, de modo que o dispositivo a jusante opere com maior rapidez sem comprometer a seletividade em relação ao religador de retaguarda instalado a montante.
+Análise de curto-circuito ABC
+Para a falta ABC no trecho T2F, as Figura 49 a Figura 54 reúnem, em forma de painéis, os sinais de tensão, corrente e as trajetórias de Clarke antes e depois do transformador isolador, permitindo comparar de maneira direta o comportamento de um curto circuito trifásico sólido sob as quatro combinações de regulador de tensão (presente/ausente) e caminho de retorno (com e sem terra). Esse conjunto de figuras complementa a análise da falta AB ao evidenciar o caso mais severo em termos de simetria e magnitude de corrente, servindo de referência para a calibração dos ajustes de sobrecorrente inversa IEC/IEEE aplicados aos religadores do trecho T2F.
+ 
+Figura 49 – Tensões de fase antes do transformador isolador para falta ABC no trecho T2F Fonte: Autor.
+ 
+Figura 50 – Tensões de fase depois do transformador isolador para falta ABC no trecho T2F. Fonte: Autor.
+As Figura 49 e Figura 50 mostram que, tanto antes quanto depois do transformador isolador, a aplicação da falta ABC em t\approx0,18\mathrm{\thinsps} provoca um afundamento praticamente idêntico nas três fases, mantendo o sistema fortemente simétrico durante a condição de defeito. A presença do regulador eleva o patamar de tensão pré falta e, consequentemente, aumenta o nível de tensão durante a falta, enquanto a ausência de regulador conduz a tensões ligeiramente menores; o transformador isolador, por sua vez, reproduz essa dinâmica no secundário com níveis absolutos mais baixos, mas sem introduzir desequilíbrios adicionais entre fases.
+ 
+Figura 51 – Corrente de fase antes do transformador isolador para falta ABC no trecho T2F. Fonte: Autor.
+ 
+Figura 52 – Corrente de fase depois do transformador isolador para falta ABC no trecho T2F. Fonte: Autor.
+Nas Figura 51 e Figura 52 observa se que as correntes de falta nas três fases são praticamente coincidentes, tanto a montante quanto a jusante do transformador, caracterizando o regime trifásico equilibrado típico de um curto ABC sólido. As correntes após o transformador isolador são mais elevadas, em especial nos cenários com regulador e retorno por terra, devido à combinação de maior tensão pré falta e menor impedância equivalente vista no secundário, o que torna esse ponto particularmente crítico para a coordenação dos religadores e para a definição dos respectivos pick ups de sobrecorrente.
+ 
+Figura 53 – Trajetórias Clarke das correntes antes do transformador isolador para falta ABC no trecho T2F. Fonte: Autor.
+ 
+Figura 54 – Trajetórias Clarke das correntes depois do transformador isolador para falta ABC no trecho T2F. Fonte: Autor.
+As Figura 53 e Figura 54 confirmam esse comportamento pela perspectiva da transformada de Clarke power invariant, em que o regime pré falta é representado por uma circunferência de menor raio que se expande, após a falta, para uma trajetória aproximadamente circular de raio constante, tanto antes quanto depois do trafo isolador. A circularidade da trajetória indica predominância quase exclusiva da componente de sequência positiva, com contribuição desprezível de sequência negativa e homopolar, ao contrário do observado nas faltas bifásicas; esse resultado reforça que, para a falta ABC, a principal variável de projeto da proteção é a magnitude da corrente de curto circuito e não o desequilíbrio entre fases, o que justifica o uso de curvas de tempo inverso puramente fasoriais (IEC/IEEE) sem necessidade de lógicas adicionais de detecção de assimetria.
+Análise de curto-circuito BC
+As Figura 55 a Figura 60 apresentam os resultados de tensão, corrente e trajetórias de Clarke obtidos para a falta entre as fases B e C no trecho T2F, considerando as quatro combinações de operação com regulador e caminho de retorno (com e sem terra) e os pontos de medição imediatamente antes e depois do transformador isolador. Esse conjunto de figuras permite comparar o comportamento da falta BC com os casos AB e ABC previamente analisados, destacando o efeito da assimetria parcial entre fases sobre os níveis de curto circuito, sobre os afundamentos de tensão e sobre a forma das trajetórias no plano iαiβ, aspectos diretamente relacionados ao desempenho e à coordenação dos religadores instalados no trecho T2F.
+ 
+Figura 55 – Tensões de fase antes do transformador isolador para falta BC no trecho T2F Fonte: Autor.
+ 
+Figura 56 – Tensões de fase depois do transformador isolador para falta BC no trecho T2F. Fonte: Autor.
+As Figura 55 e Figura 56 mostram os perfis de tensão trifásica antes e depois do transformador isolador durante a falta BC, respectivamente. Em ambos os pontos de medição, observa se que as tensões das fases B e C sofrem afundamentos expressivos a partir do instante de falta, enquanto a fase A mantém se próxima ao valor pré falta, caracterizando a natureza bifásica do defeito. A presença do regulador de tensão eleva o patamar de tensão pré falta e resulta em afundamentos ligeiramente mais profundos em módulo, ao passo que a ausência do regulador conduz a tensões iniciais menores e a uma redução marginal na severidade do sag, efeito que se replica no lado secundário do transformador com níveis absolutos mais baixos devido à relação de transformação.
+ 
+Figura 57 – Corrente de fase antes do transformador isolador para falta BC no trecho T2F. Fonte: Autor.
+ 
+Figura 58 – Corrente de fase depois do transformador isolador para falta BC no trecho T2F. Fonte: Autor.
+Nas Figura 57 e Figura 58 são apresentadas as correntes de fase antes e depois do transformador isolador para a mesma falta BC. Nota se que as correntes nas fases B e C assumem patamares de curto circuito muito superiores ao regime de carga, enquanto a fase A permanece praticamente inalterada, em linha com a topologia da falta entre fases B e C. As correntes no lado secundário do transformador são mais elevadas, especialmente nos cenários com regulador e com retorno por terra, o que implica menores tempos de atuação nas curvas de sobrecorrente inversa IEC/IEEE dos religadores a jusante; por outro lado, nos cenários sem regulador e/ou sem terra, as correntes são ligeiramente menores, o que pode reduzir a margem de sensibilidade para ajustes mais conservadores.
+ 
+Figura 59 – Trajetórias Clarke das correntes antes do transformador isolador para falta BC no trecho T2F. Fonte: Autor.
+
+
+
+ 
+Figura 60 – Trajetórias Clarke das correntes depois do transformador isolador para falta BC no trecho T2F. Fonte: Autor.
+As Figura 59 e Figura 60 ilustram as trajetórias de Clarke das correntes para a falta BC antes e depois do transformador isolador, respectivamente. Em ambos os casos, o regime pré falta é representado por uma circunferência de menor raio, associada ao sistema equilibrado, que se deforma, após a aplicação da falta, em uma elipse alongada em direção ao quadrante dominado pelas componentes das fases B e C. A forma elíptica é semelhante nos quatro cenários, indicando que o tipo de falta permanece essencialmente bifásico, enquanto o raio e a espessura da trajetória aumentam nos casos com regulador e retorno por terra, refletindo correntes de curto circuito mais elevadas; essa variação de amplitude em iαiβ é relevante para a caracterização de assinaturas de falta e para a validação dos ajustes de proteção baseados em grandezas transformadas no plano \alpha\beta.
+Análise de curto-circuito CA
+As Figura 61 a Figura 66 reúnem os resultados de tensão, corrente e trajetórias de Clarke para a falta entre as fases C e A no trecho T2F, contemplando as quatro combinações de operação com regulador e caminho de retorno (com e sem terra) e os pontos de medição imediatamente antes e depois do transformador isolador. Esses painéis permitem comparar o comportamento da falta CA com os casos AB e BC, evidenciando como a posição da fase envolvida em relação ao regulador e ao trafo isolador influencia os níveis de curto circuito, os afundamentos de tensão e a forma das trajetórias no plano iαiβ, aspectos fundamentais para a avaliação da seletividade e da coordenação dos religadores do trecho T2F.
+ 
+Figura 61 – Tensões de fase antes do transformador isolador para falta CA no trecho T2F Fonte: Autor.
+ 
+Figura 62 – Tensões de fase depois do transformador isolador para falta CA no trecho T2F. Fonte: Autor.
+As Figura 61 e Figura 62 apresentam os perfis de tensão trifásica antes e depois do transformador isolador durante a falta CA, respectivamente. Observa se que as tensões das fases A e C sofrem afundamentos significativos a partir do instante de aplicação da falta, enquanto a fase B mantém se próxima ao valor pré falta, caracterizando a natureza bifásica do defeito. Nos cenários com regulador, o patamar de tensão pré falta é mais elevado e o sag resultante é ligeiramente mais profundo, ao passo que nos cenários sem regulador as tensões iniciais são menores e a severidade do afundamento diminui marginalmente; o transformador isolador reproduz essa dinâmica no lado secundário com níveis absolutos reduzidos, mas sem introduzir desequilíbrios adicionais entre as fases envolvidas.
+ 
+Figura 63 – Corrente de fase antes do transformador isolador para falta CA no trecho T2F. Fonte: Autor.
+ 
+Figura 64 – Corrente de fase depois do transformador isolador para falta CA no trecho T2F. Fonte: Autor.
+As Figura 63 e Figura 64 mostram as correntes de fase antes e depois do transformador isolador para a falta CA. Verifica se que as fases A e C passam a conduzir correntes de curto circuito substancialmente superiores às correntes de carga, enquanto a fase B permanece praticamente inalterada, em conformidade com a topologia da falta entre fases C e A. No lado secundário do trafo, as correntes são mais elevadas, sobretudo nos cenários com regulador e com retorno por terra, o que implica tempos de atuação menores nas curvas inversas IEC/IEEE configuradas para o religador a jusante; já nos cenários sem regulador e/ou sem terra, a redução das correntes de falta tende a alongar os tempos de operação e a diminuir a margem de sensibilidade da proteção.
+ 
+Figura 65 – Trajetórias Clarke das correntes antes do transformador isolador para falta CA no trecho T2F. Fonte: Autor.
+ 
+Figura 66 – Trajetórias Clarke das correntes depois do transformador isolador para falta CA no trecho T2F. Fonte: Autor.
+As Figura 65 e Figura 66 ilustram as trajetórias de Clarke das correntes para a falta CA antes e depois do transformador isolador, respectivamente. Em ambos os pontos de medição, o regime pré falta é representado por uma circunferência de menor raio centrada na origem, que se transforma, após a aplicação da falta, em uma elipse alongada aproximadamente ao longo do eixo correspondente à combinação das fases A e C, evidenciando a presença simultânea de componentes de sequência positiva e negativa associadas ao defeito bifásico. A forma da elipse permanece similar entre os quatro cenários, enquanto o raio e a espessura da trajetória aumentam nos casos com regulador e retorno por terra, refletindo correntes de curto circuito mais elevadas; tais variações em iαiβ são relevantes para a caracterização de assinaturas de falta e corroboram os ajustes de sobrecorrente adotados nos religadores do trecho T2F.
+Análise dos tempos de religadores.
+Esta subseção apresenta a análise comparativa dos tempos de atuação dos religadores para as diferentes combinações de curvas IEC/IEEE e condições de operação do trecho T2F (com/sem regulador e com/sem retorno por terra), considerando faltas do tipo AB, ABC, BC e CA. Os gráficos de barras sintetizam, para cada cenário, os tempos de disparo obtidos antes e depois do transformador isolador, permitindo quantificar a influência da topologia local (posição do Transformador) e das curvas de sobrecorrente inversa sobre a rapidez de eliminação da falta e sobre a margem de coordenação entre os dispositivos de proteção.
+Análise religadores – Falta AB
+As Figura 67 a Figura 72 apresentam os tempos de atuação dos religadores para a falta AB no trecho T2F, considerando as curvas de sobrecorrente inversa IEEE (U1, U2 e U3) e IEC (C1, C2 e C3), bem como as quatro combinações de operação com regulador e retorno (CR+CT, ST, SR e SR+ST) antes e depois do transformador isolador. Esses resultados permitem quantificar a influência simultânea da característica da curva e da posição do religador em relação ao trafo sobre a rapidez de eliminação da falta e sobre a margem de coordenação entre os dispositivos de proteção
+ 
+Figura 67 – Tempo de atuação dos religadores para falta AB com curva IEEE U1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 68 – Tempo de atuação dos religadores para falta AB com curva IEEE U2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 69 – Tempo de atuação dos religadores para falta AB com curva IEEE U3 (antes e depois do transformador isolador). Fonte: Autor.
+Nas Figura 67, Figura 68 e Figura 69 são mostrados os tempos de atuação calculados para as curvas IEEE U1, U2 e U3, respectivamente, comparando os religadores instalados antes e depois do transformador isolador nas diferentes combinações de regulador e retorno. Observa se que, para uma mesma condição de falta AB, a adoção de curvas mais inversas (U3) aumenta o tempo absoluto de operação e o desfasamento \Delta t entre os lados a montante e a jusante, reforçando a seletividade em relação ao religador de retaguarda. As curvas U1 e U2, por sua vez, produzem tempos globais menores e diferenças mais discretas entre antes e depois do trafo, o que favorece a rapidez de eliminação da falta, mas exige maior cuidado na definição dos dials de tempo para evitar sobreposição de zonas de atuação.
+ 
+Figura 70 – Tempo de atuação dos religadores para falta AB com curva IEC C1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 71 – Tempo de atuação dos religadores para falta AB com curva IEC C2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 72 – Tempo de atuação dos religadores para falta AB com curva IEC C3 (antes e depois do transformador isolador). Fonte: Autor.
+As Figura 70, Figura 71 e Figura 72 apresentam os tempos de atuação para as curvas IEC C1, C2 e C3, mantendo os cenários de regulador e retorno. Verifica se que as curvas IEC C2 e, sobretudo, C3 conduzem a tempos de operação significativamente superior aos obtidos com C1, com acréscimos de \Delta t entre o religador a jusante e o religador a montante que chegam a alguns décimos de segundo, em linha com o comportamento extremamente inverso dessas características. Essa maior inclinação das curvas aumenta a robustez da coordenação para a falta AB ao longo do trecho T2F, garantindo que o religador mais próximo da falta atue prioritariamente, enquanto o dispositivo a montante permanece como retaguarda temporizada, mesmo na presença de variações de correntes associadas às diferentes combinações de regulador e caminho de retorno.
+Análise religadores – Falta ABC
+As Figura 73 a Figura 78 apresentam os tempos de atuação dos religadores para a falta trifásica ABC no trecho T2F, considerando as curvas de sobrecorrente inversa IEEE U1, U2 e U3 e IEC C1, C2 e C3, bem como as quatro combinações de operação com regulador e retorno (CR+CT, ST, SR e SR+ST) antes e depois do transformador isolador. Esses resultados sintetizam o desempenho da proteção no cenário mais severo em termos de magnitude de corrente, permitindo avaliar como a forma da curva e a posição do religador em relação ao transformador influenciam a rapidez de eliminação da falta e a margem de coordenação entre os dispositivos.
+ 
+Figura 73 – Tempo de atuação dos religadores para falta ABC com curva IEEE U1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 74 – Tempo de atuação dos religadores para falta ABC com curva IEEE U2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 75 – Tempo de atuação dos religadores para falta ABC com curva IEEE U3 (antes e depois do transformador isolador). Fonte: Autor.
+As Figura 73, Figura 74 e Figura 75 mostram os tempos de atuação calculados para as curvas IEEE U1, U2 e U3, respectivamente, comparando os religadores posicionados antes e depois do transformador nas diferentes combinações de regulador e retorno. Em todos os casos, observa se que os tempos absolutos são menores do que os obtidos para faltas bifásicas, em razão das correntes de curto circuito mais elevadas da falta ABC, mas permanece um desfasamento \Delta t entre os lados a montante e a jusante, que aumenta à medida que se utiliza uma curva mais inversa (U3). As curvas U1 e U2 produzem tempos globalmente mais rápidos e diferenças menores entre os dois lados, o que é desejável quando se prioriza rapidez de atuação, ao passo que a curva U3 introduz um atraso adicional que reforça a seletividade entre religador jusante e religador de retaguarda.
+ 
+Figura 76 – Tempo de atuação dos religadores para falta ABC com curva IEC C1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 77 – Tempo de atuação dos religadores para falta ABC com curva IEC C2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 78 – Tempo de atuação dos religadores para falta ABC com curva IEC C3 (antes e depois do transformador isolador). Fonte: Autor.
+As Figura 76, Figura 77 e Figura 78 apresentam os tempos de atuação correspondentes às curvas IEC C1, C2 e C3 para a mesma falta ABC. Verifica se que a curva C1 (standard inverse) resulta em tempos intermediários e em diferenças de poucos centésimos de segundo entre antes e depois do trafo, enquanto as curvas C2 e, sobretudo, C3 (very e extremely inverse) ampliam significativamente o tempo de operação, em especial no religador situado a jusante, aumentando também a margem \Delta t em relação ao religador a montante. Esse comportamento está em consonância com a maior inclinação das curvas IEC muito e extremamente inversas e reforça a filosofia de coordenação adotada: o religador mais próximo da falta ABC atua primeiro com um tempo ainda aceitável, enquanto o religador de retaguarda permanece suficientemente atrasado para evitar atuações indevidas em condições de curto circuito limitadas ao trecho protegido.
+Análise religadores – Falta BC
+As Figura 79 a Figura 84 apresentam os tempos de atuação dos religadores para a falta BC no trecho T2F, considerando as curvas de sobrecorrente inversa IEEE U1, U2 e U3 e IEC C1, C2 e C3, bem como as quatro combinações de operação com regulador e retorno (CR+CT, ST, SR e SR+ST) antes e depois do transformador isolador. Esses resultados permitem comparar o desempenho da proteção para uma falta bifásica BC com o observado nos casos AB, AC e ABC, destacando a influência conjunta da característica da curva e da posição do religador em relação ao transformador sobre a rapidez de eliminação da falta e sobre a margem de coordenação entre os dispositivos.
+ 
+Figura 79 – Tempo de atuação dos religadores para falta BC com curva IEEE U1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 80 – Tempo de atuação dos religadores para falta BC com curva IEEE U2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 81 – Tempo de atuação dos religadores para falta BC com curva IEEE U3 (antes e depois do transformador isolador). Fonte: Autor.
+Nas Figura 79, Figura 80 e Figura 81 são mostrados os tempos de atuação calculados para as curvas IEEE U1, U2 e U3, respectivamente, comparando os religadores instalados antes e depois do transformador isolador. Observa se que, para a falta BC, os tempos globais de operação permanecem na faixa de centenas de milissegundos, com diferenças \Delta t entre os lados a montante e a jusante que aumentam quando se utiliza a curva mais inversa U3. As curvas U1 e U2 resultam em respostas mais rápidas e em desfasamentos mais modestos entre antes e depois do trafo, o que favorece a rapidez de eliminação da falta, enquanto a curva U3 introduz um atraso adicional que reforça a seletividade entre o religador jusante e o religador de retaguarda.
+ 
+Figura 82 – Tempo de atuação dos religadores para falta BC com curva IEC C1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 83 – Tempo de atuação dos religadores para falta BC com curva IEC C2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 84 – Tempo de atuação dos religadores para falta BC com curva IEC C3 (antes e depois do transformador isolador). Fonte: Autor.
+As Figura 82, Figura 83 e Figura 84 apresentam os tempos de atuação para as curvas IEC C1, C2 e C3, mantendo os mesmos cenários de regulador e retorno. Verifica se que a curva C1 (standard inverse) produz tempos intermediários e diferenças de tempo moderadas entre os lados antes e depois do transformador, ao passo que as curvas C2 e, sobretudo, C3 (very e extremely inverse) elevam significativamente o tempo absoluto de operação e ampliam \Delta t entre religador jusante e religador a montante. Esse comportamento confirma que curvas IEC mais inversas aumentam a robustez da coordenação para faltas BC no trecho T2F, garantindo que o dispositivo mais próximo da falta atue prioritariamente, enquanto o religador de retaguarda permanece suficientemente atrasado para evitar atuações indevidas em condições de curto circuito restritas ao trecho protegido.
+Análise religadores – Falta CA
+As Figura 85 a Figura 90 apresentam os tempos de atuação dos religadores para a falta CA no trecho T2F, considerando as curvas de sobrecorrente inversa IEEE U1, U2 e U3 e IEC C1, C2 e C3 nas quatro combinações de operação com regulador e retorno (CR+CT, ST, SR e SR+ST), tanto antes quanto depois do transformador isolador. Esse conjunto de gráficos permite comparar o desempenho da proteção para essa falta bifásica específica com os casos AB, BC e ABC, evidenciando como a escolha da curva e a posição do religador em relação ao transformador influenciam a rapidez de eliminação da falta e a margem de coordenação entre os dispositivos.
+ 
+Figura 85 – Tempo de atuação dos religadores para falta CA com curva IEEE U1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 86 – Tempo de atuação dos religadores para falta CA com curva IEEE U2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 87 – Tempo de atuação dos religadores para falta CA com curva IEEE U3 (antes e depois do transformador isolador). Fonte: Autor.
+Nas Figura 85, Figura 86 e Figura 87 são mostrados os tempos de atuação calculados para as curvas IEEE U1, U2 e U3, respectivamente, comparando os religadores instalados antes e depois do transformador isolador para a falta CA. Observa se que os tempos globais situam se na faixa de 0,6 s a pouco mais de 1 s, com diferenças \Delta t entre os lados a montante e a jusante que crescem à medida que se utiliza uma curva mais inversa (U3). As curvas U1 e U2 produzem respostas mais rápidas e desfasamentos menores entre antes e depois do trafo, o que favorece a rapidez de eliminação da falta, enquanto a curva U3 introduz um atraso adicional que reforça a seletividade entre o religador jusante e o religador de retaguarda, à custa de maior tempo de exposição da rede ao curto circuito.
+ 
+Figura 88 – Tempo de atuação dos religadores para falta CA com curva IEC C1 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 89 – Tempo de atuação dos religadores para falta CA com curva IEC C2 (antes e depois do transformador isolador). Fonte: Autor.
+ 
+Figura 90 – Tempo de atuação dos religadores para falta CA com curva IEC C3 (antes e depois do transformador isolador). Fonte: Autor.
+As Figura 88, Figura 89 e Figura 90 apresentam os tempos de atuação para as curvas IEC C1, C2 e C3, mantendo os mesmos cenários de regulador e retorno. Verifica se que a curva C1 (standard inverse) resulta em tempos intermediários, com diferenças de tempo da ordem de centésimos de segundo entre os lados antes e depois do transformador, ao passo que as curvas C2 e principalmente C3 (very e extremely inverse) elevam significativamente os tempos absolutos de operação, com \Delta t entre religador jusante e religador a montante chegando a vários décimos de segundo. Esse comportamento confirma que curvas IEC mais inversas aumentam a robustez da coordenação para faltas CA no trecho T2F, garantindo que o dispositivo mais próximo da falta opere prioritariamente, enquanto o religador de retaguarda permanece suficientemente atrasado para evitar atuações indevidas em faltas restritas ao trecho protegido.
+Análise das curvas dos religadores
+A presente subseção reúne a análise integrada do desempenho das seis curvas de religadores avaliadas (IEEE U1, U2, U3 e IEC C1, C2, C3), considerando simultaneamente os tempos médios de atuação e as margens de coordenação obtidos para as diferentes faltas simuladas no trecho T2F. A partir dos resultados consolidados nas tabelas de síntese e no gráfico de trade-off rapidez–seletividade, torna-se possível comparar de forma objetiva o efeito da característica de tempo inverso sobre a rapidez de eliminação das faltas e sobre a seletividade temporal entre os religadores posicionados antes e depois do transformador isolador. Com base nessa visão global, discute-se a seguir quais curvas atendem mais adequadamente aos requisitos de proteção do sistema estudado, bem como os compromissos inerentes à escolha de cada família de TCC.
+Tabela 3
+Síntese dos tempos médios de atuação
+Curva	AB	ABC	BC	CA	Tempo Médio Global
+IEEE U1	0.7175	0.6222	0.696	0.6985	0.6835
+IEEE U2	0.8518	0.6226	0.7974	0.8034	0.7688
+IEEE U3	1.0496	0.7201	0.9714	0.9801	0.9303
+IEC C1	1.8575	1.5985	1.7991	1.8057	1.7652
+IEC C2	1.9675	1.524	1.8661	1.8775	1.8088
+IEC C3	2.8739	1.9394	2.6521	2.6767	2.5355
+Fonte: Autor.
+A Tabela 3 de tempos médios mostra que as curvas IEEE apresentam os menores valores globais de tempo de atuação após o transformador isolador, com destaque para a curva IEEE U1, cujo tempo médio global é da ordem de tmedio≈0,68 s. A curva IEEE U2 vem em seguida, com tmedio≈0,77 s, enquanto a IEEE U3 permanece abaixo de 1,0\mathrm{\thinsps}, ainda significativamente mais rápida do que as curvas IEC, cujos tempos médios variam de aproximadamente 1,76\mathrm{\thinsps} (IEC C1) a 2,54\mathrm{\thinsps} (IEC C3). Esse resultado confirma que, para o sistema T2F estudado, as curvas IEEE são mais adequadas quando o critério principal é a rapidez de eliminação das faltas, reduzindo o estresse térmico e eletromecânico sobre os equipamentos.
+Tabela 4
+Síntese das margens médias de coordenação.
+Curva	AB	ABC	BC	CA	Margens Média de Coordenação
+IEEE U1	-0.0526	0.0114	-0.0526	-0.0527	-0.0366
+IEEE U2	-0.13	0.0257	-0.1264	-0.1271	-0.0894
+IEEE U3	-0.187	0.037	-0.1818	-0.1828	-0.1287
+IEC C1	-0.1429	0.0308	-0.143	-0.1432	-0.0996
+IEC C2	-0.2466	0.052	-0.2448	-0.2455	-0.1712
+IEC C3	-0.5304	0.1049	-0.5157	-0.5186	-0.3649
+Fonte: Autor.
+A Tabela 4 de margens de coordenação evidencia que todas as curvas apresentam \Deltatmedio negativo quando se considera o par “antes vs. depois do transformador isolador”, indicando que, em média, o religador a jusante atua mais lentamente do que o dispositivo a montante. Em termos absolutos, porém, verifica-se um gradiente claro: as curvas IEEE exibem as menores diferenças de tempo (por exemplo, \Deltatmedio≈-0,04 s para a IEEE U1 e \approx-0,09\mathrm{\thinsps} para a IEEE U2), enquanto as curvas IEC C2 e, especialmente, IEC C3 apresentam margens significativamente mais negativas (até cerca de -0,36\mathrm{\thinsps} na IEC C3). Do ponto de vista de coordenação temporal, isso significa que as curvas IEC mais inversas fornecem um “alargamento” da diferença de tempos entre antes e depois do transformador, reforçando a seletividade, porém à custa de tempos de atuação substancialmente maiores.
+ 
+Figura 91 – Síntese Final: Rapidez × Seletividade das Curvas dos Religadores. Fonte: Autor.
+A Figura 91 da síntese final reúne essas duas métricas e deixa evidente o trade-off entre rapidez e seletividade das curvas TCC. As barras azuis mostram o crescimento monotônico do tempo médio de atuação ao se passar de IEEE U1 para IEC C3, enquanto a curva de margem média (linha vermelha) torna-se progressivamente mais negativa, indicando ganho em seletividade relativa. Observa-se ainda que a linha horizontal correspondente à meta mínima de coordenação (por exemplo, \Delta t_{\mathrm{coord,min}}=0,2\mathrm{\thinsps}) não é atingida pelas curvas IEEE, mas é superada com ampla folga pelas curvas IEC C2 e C3, que, no entanto, levam o tempo médio de atuação para patamares superiores a 1,8\mathrm{\thinsps} e 2,5\mathrm{\thinsps}, respectivamente.

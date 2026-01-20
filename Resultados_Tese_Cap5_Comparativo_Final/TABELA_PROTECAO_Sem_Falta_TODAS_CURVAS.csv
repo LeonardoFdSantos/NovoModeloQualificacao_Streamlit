@@ -1,0 +1,25 @@
+Curva;Caso;Icc_Antes_Trafo(A);Icc_Depois_Trafo(A);Tempo_Antes(s);Tempo_Depois(s);Status
+IEC_C1;Com Regulador e Com Terra;13.45;23.93;Inf;Inf;Sem Atuação
+IEC_C1;Sem Terra;13.49;23.93;Inf;Inf;Sem Atuação
+IEC_C1;Sem Regulador;12.46;22.45;Inf;Inf;Sem Atuação
+IEC_C1;Sem Regulador e Sem Terra;12.46;22.45;Inf;Inf;Sem Atuação
+IEC_C2;Com Regulador e Com Terra;13.45;23.93;Inf;Inf;Sem Atuação
+IEC_C2;Sem Terra;13.49;23.93;Inf;Inf;Sem Atuação
+IEC_C2;Sem Regulador;12.46;22.45;Inf;Inf;Sem Atuação
+IEC_C2;Sem Regulador e Sem Terra;12.46;22.45;Inf;Inf;Sem Atuação
+IEC_C3;Com Regulador e Com Terra;13.45;23.93;Inf;Inf;Sem Atuação
+IEC_C3;Sem Terra;13.49;23.93;Inf;Inf;Sem Atuação
+IEC_C3;Sem Regulador;12.46;22.45;Inf;Inf;Sem Atuação
+IEC_C3;Sem Regulador e Sem Terra;12.46;22.45;Inf;Inf;Sem Atuação
+IEEE_U1;Com Regulador e Com Terra;13.45;23.93;Inf;Inf;Sem Atuação
+IEEE_U1;Sem Terra;13.49;23.93;Inf;Inf;Sem Atuação
+IEEE_U1;Sem Regulador;12.46;22.45;Inf;Inf;Sem Atuação
+IEEE_U1;Sem Regulador e Sem Terra;12.46;22.45;Inf;Inf;Sem Atuação
+IEEE_U2;Com Regulador e Com Terra;13.45;23.93;Inf;Inf;Sem Atuação
+IEEE_U2;Sem Terra;13.49;23.93;Inf;Inf;Sem Atuação
+IEEE_U2;Sem Regulador;12.46;22.45;Inf;Inf;Sem Atuação
+IEEE_U2;Sem Regulador e Sem Terra;12.46;22.45;Inf;Inf;Sem Atuação
+IEEE_U3;Com Regulador e Com Terra;13.45;23.93;Inf;Inf;Sem Atuação
+IEEE_U3;Sem Terra;13.49;23.93;Inf;Inf;Sem Atuação
+IEEE_U3;Sem Regulador;12.46;22.45;Inf;Inf;Sem Atuação
+IEEE_U3;Sem Regulador e Sem Terra;12.46;22.45;Inf;Inf;Sem Atuação

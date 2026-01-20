@@ -1,0 +1,7 @@
+Curva_Teste;R_Montante(A);R_Jusante(A);Pickup_M;Pickup_J;Tempo_Montante(s);Tempo_Jusante(s);Diferenca(s);1o_A_Atuar;2o_A_Atuar;Status_Coordenacao
+IEC_C1;68.65;108.77;20;35;1.6819;1.8311;0.1492;Montante;Jusante;FALHA: Montante Rápido Demais
+IEC_C2;68.65;108.77;20;35;1.6650;1.9214;0.2564;Montante;Jusante;FALHA: Montante Rápido Demais
+IEC_C3;68.65;108.77;20;35;2.2260;2.7718;0.5458;Montante;Jusante;FALHA: Montante Rápido Demais
+IEEE_U1;68.65;108.77;20;35;0.6529;0.7078;0.0549;Montante;Jusante;FALHA: Montante Rápido Demais
+IEEE_U2;68.65;108.77;20;35;0.6930;0.8267;0.1338;Montante;Jusante;FALHA: Montante Rápido Demais
+IEEE_U3;68.65;108.77;20;35;0.8212;1.0136;0.1924;Montante;Jusante;FALHA: Montante Rápido Demais
