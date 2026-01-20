@@ -1,0 +1,25 @@
+Curva;Caso;Icc_Antes_Trafo(A);Icc_Depois_Trafo(A);Tempo_Antes(s);Tempo_Depois(s);Status
+IEC_C1;Com Regulador e Com Terra;72.08;129.35;1.6171;1.5856;Coord OK
+IEC_C1;Sem Terra;73.24;129.85;1.5969;1.5809;Coord OK
+IEC_C1;Sem Regulador;70.19;126.47;1.6517;1.6138;Coord OK
+IEC_C1;Sem Regulador e Sem Terra;70.19;126.47;1.6517;1.6138;Coord OK
+IEC_C2;Com Regulador e Com Terra;72.08;129.35;1.5553;1.5023;Coord OK
+IEC_C2;Sem Terra;73.24;129.85;1.5214;1.4945;Coord OK
+IEC_C2;Sem Regulador;70.19;126.47;1.6138;1.5497;Coord OK
+IEC_C2;Sem Regulador e Sem Terra;70.19;126.47;1.6138;1.5497;Coord OK
+IEC_C3;Com Regulador e Com Terra;72.08;129.35;2.0019;1.8959;Coord OK
+IEC_C3;Sem Terra;73.24;129.85;1.9338;1.8804;Coord OK
+IEC_C3;Sem Regulador;70.19;126.47;2.1207;1.9906;Coord OK
+IEC_C3;Sem Regulador e Sem Terra;70.19;126.47;2.1207;1.9906;Coord OK
+IEEE_U1;Com Regulador e Com Terra;72.08;129.35;0.6291;0.6175;Coord OK
+IEEE_U1;Sem Terra;73.24;129.85;0.6216;0.6157;Coord OK
+IEEE_U1;Sem Regulador;70.19;126.47;0.6418;0.6278;Coord OK
+IEEE_U1;Sem Regulador e Sem Terra;70.19;126.47;0.6418;0.6278;Coord OK
+IEEE_U2;Com Regulador e Com Terra;72.08;129.35;0.6380;0.6120;Coord OK
+IEEE_U2;Sem Terra;73.24;129.85;0.6213;0.6082;Coord OK
+IEEE_U2;Sem Regulador;70.19;126.47;0.6671;0.6352;Coord OK
+IEEE_U2;Sem Regulador e Sem Terra;70.19;126.47;0.6671;0.6352;Coord OK
+IEEE_U3;Com Regulador e Com Terra;72.08;129.35;0.7422;0.7048;Coord OK
+IEEE_U3;Sem Terra;73.24;129.85;0.7182;0.6993;Coord OK
+IEEE_U3;Sem Regulador;70.19;126.47;0.7840;0.7382;Coord OK
+IEEE_U3;Sem Regulador e Sem Terra;70.19;126.47;0.7840;0.7382;Coord OK

@@ -1,555 +1,528 @@
-# %%
-# ==============================================================================
-# 1. IMPORTS E CONFIGURAÇÕES GERAIS
-# ==============================================================================
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
-import h5py
+import matplotlib.pyplot as plt
 import scipy.io as sio
-from scipy.ndimage import uniform_filter1d
-from pathlib import Path
+import h5py
+import os
 import warnings
-import matplotlib as mpl
+from pathlib import Path
 
-# Suprimir avisos
-warnings.filterwarnings('ignore')
+# ==============================================================================
+# 1. CONFIGURAÇÕES GLOBAIS
+# ==============================================================================
 
-# --- CONSTANTES DO SISTEMA ---
-# Define o instante exato da falta para plotagem e cálculos
-INSTANTE_FALTA = 0.5 / 3  # ~0.1667 segundos
+# 🔧 AJUSTE O CAMINHO DA SUA PASTA AQUI
+PASTA_DADOS = r"C:\Users\leosa\OneDrive\Coisas_Leonardo\gits\CurtosT2F\T2F_MATLAB\NovoArtigoPowerDelivery34bus\NovoModeloQualificacao\Teste_Novo_Sem_Terra_14\Processados_HDF5/"
 
-# --- CONFIGURAÇÕES DE ESTILO (ABNT/IEEE) ---
-plt.style.use('seaborn-v0_8-whitegrid')
-mpl.rcParams.update({
+BARRAS_DISPONIVEIS = ["800", "T2F", "T2F1", "818", "820", "822"]
+INSTANTE_FALTA = 0.5 / 3  # ~0.1667 s
+FREQ_SISTEMA = 60.0  # Hz
+
+# Estilo
+plt.rcParams.update({
     'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'DejaVu Serif'],
+    'font.serif': ['Times New Roman'],
     'font.size': 12,
-    'axes.labelsize': 14,
-    'axes.titlesize': 14,
-    'axes.titleweight': 'bold',
-    'xtick.labelsize': 11,
-    'ytick.labelsize': 11,
-    'legend.fontsize': 10,
-    'figure.dpi': 120,
-    'savefig.dpi': 300,
-    'lines.linewidth': 2.0,
     'axes.grid': True,
-    'grid.alpha': 0.3
+    'grid.alpha': 0.3,
+    'grid.linestyle': '--',
+    'figure.dpi': 120,
+    'savefig.dpi': 300
 })
 
-# Paleta de Cores Consistente
 CORES = {
-    'A': '#0066CC', 'B': '#CC0000', 'C': '#009900',
     'MRN': '#1f77b4', 'T2F': '#ff7f0e',
-    'ComReg': '#2ca02c', 'SemReg': '#d62728',
-    'ComTerra': '#9467bd', 'SemTerra': '#8c564b'
+    'com_reg': '#2ca02c', 'sem_reg': '#d62728',
+    'com_terra': 'black', 'sem_terra': 'purple'
 }
 
-print("✅ Ambiente Configurado. Instante da falta definido em: {:.4f} s".format(INSTANTE_FALTA))
+warnings.filterwarnings("ignore")
 
 
 # ==============================================================================
-# 2. MOTOR DE PROCESSAMENTO E CÁLCULOS
+# 2. FUNÇÕES AUXILIARES ROBUSTAS
 # ==============================================================================
 
-class ProcessadorAvancado:
-    def __init__(self, t, V, I, freq=60):
-        self.t = np.array(t).flatten()
-        self.v = self._garantir_3_fases(V)
-        self.i = self._garantir_3_fases(I)
-        self.freq = freq
+def garantir_shape_3fases(arr):
+    """Garante que o array seja (N, 3)."""
+    arr = np.array(arr)
+    if arr.size == 0: return np.zeros((0, 3))
 
-        # Taxa de amostragem
-        if len(self.t) > 1:
-            self.dt = float(self.t[1] - self.t[0])
-            self.fs = 1.0 / self.dt
-        else:
-            self.fs = 60 * 256
-            self.dt = 1 / self.fs
+    # Se for 1D (ex: vetor de tempo ou uma fase solta), duplica ou molda
+    if arr.ndim == 1:
+        # Se parecer vetor de tempo (muitos pontos), não duplica, retorna N,1 ou erro?
+        # Para V e I, queremos 3 colunas. Se vier 1, replicamos?
+        # Vamos assumir que se vier 1D para V/I, é erro de leitura ou apenas 1 fase gravada.
+        # Aqui, vamos tratar como coluna única
+        return np.column_stack([arr, arr, arr])  # Replica para evitar erro de índice
 
-        self.samples_per_cycle = int(self.fs / self.freq)
+    if arr.shape[0] == 3 and arr.shape[1] > 3:
+        return arr.T
 
-    def _garantir_3_fases(self, arr):
-        arr = np.array(arr)
-        if arr.ndim == 1: return np.column_stack([arr, arr, arr])
-        if arr.shape[0] == 3 and arr.shape[1] > 3: return arr.T
-        return arr
+    if arr.ndim == 2 and arr.shape[1] < 3:
+        # Completa com zeros se faltar fase
+        cols_faltantes = 3 - arr.shape[1]
+        return np.hstack([arr, np.zeros((arr.shape[0], cols_faltantes))])
 
-    def calcular_rms(self, sinal):
-        """RMS móvel (janela de 1 ciclo)."""
-        window = max(1, self.samples_per_cycle)
-        return np.sqrt(uniform_filter1d(sinal ** 2, size=window, axis=0))
+    return arr
 
-    def get_phasors(self, t_janela_inicio, n_cycles=1):
-        """Retorna fasores complexos (Mag, Angle) para um instante."""
-        idx = np.searchsorted(self.t, t_janela_inicio)
-        window = int(self.samples_per_cycle * n_cycles)
-        phasors = []
-        for fase in range(3):
-            if idx + window > len(self.v):
-                seg = self.v[idx:, fase]
-            else:
-                seg = self.v[idx:idx + window, fase]
 
-            # FFT simples para pegar fundamental
-            if len(seg) == 0:
-                phasors.append(0j)
-                continue
+def rms(signal):
+    if len(signal) == 0: return 0.0
+    return np.sqrt(np.mean(np.abs(signal) ** 2))
 
-            fft_res = np.fft.rfft(seg)
-            freqs = np.fft.rfftfreq(len(seg), 1 / self.fs)
-            idx_60 = np.argmin(np.abs(freqs - 60))
-            val = fft_res[idx_60] if idx_60 < len(fft_res) else 0
-            # Normalizar magnitude pela janela (aprox)
-            mag = np.abs(val) * 2 / len(seg)
-            angle = np.angle(val)
-            phasors.append(mag * np.exp(1j * angle))
-        return np.array(phasors)
 
-    def get_sym_components(self, t_instante):
-        """Retorna magnitudes [Zero, Pos, Neg]."""
-        phasors = self.get_phasors(t_instante)
-        a = np.exp(1j * 2 * np.pi / 3)
-        A_mat = np.array([[1, 1, 1], [1, a ** 2, a], [1, a, a ** 2]]) / 3
-        seq = A_mat @ phasors
-        return np.abs(seq)  # [V0, V1, V2]
+def rms_deslizante(signal, janela_amostras):
+    s = pd.Series(signal)
+    return s.rolling(window=janela_amostras, center=False).apply(lambda x: np.sqrt(np.mean(x ** 2))).fillna(0).values
 
-    def get_fft_metrics(self, t_inicio, t_fim):
-        """Calcula V1, V3, THD e retorna espectro para plot."""
-        idx_ini = np.searchsorted(self.t, t_inicio)
-        idx_fim = np.searchsorted(self.t, t_fim)
-        seg = self.v[idx_ini:idx_fim, 0]  # Fase A por padrão
 
-        if len(seg) == 0: return None
+def indice_falta(t, instante=INSTANTE_FALTA):
+    if len(t) == 0: return 0
+    return int(np.argmin(np.abs(t - instante)))
 
-        # Janela Hanning
-        w = np.hanning(len(seg))
-        X = np.fft.rfft(seg * w)
-        freqs = np.fft.rfftfreq(len(seg), d=self.dt)
-        mag = (2.0 / np.sum(w)) * np.abs(X)
 
-        # Métricas
-        idx_60 = np.argmin(np.abs(freqs - 60))
-        idx_180 = np.argmin(np.abs(freqs - 180))
+def janelas_prefalta_falta(t, fs, n_ciclos=2):
+    kf = indice_falta(t)
+    n = int(round(n_ciclos * fs / FREQ_SISTEMA))
+    return slice(max(0, kf - n), kf), slice(kf, min(len(t), kf + n))
 
-        v1 = mag[idx_60] if idx_60 < len(mag) else 0
-        v3 = mag[idx_180] if idx_180 < len(mag) else 0
 
-        harmonics_sum = np.sum(mag[idx_60 + 1:] ** 2)
-        thd = (np.sqrt(harmonics_sum) / v1) * 100 if v1 > 0 else 0
+def fasor_fundamental(x, fs):
+    N = len(x)
+    if N == 0: return 0j
+    t = np.arange(N) / fs
+    w = np.exp(-1j * 2 * np.pi * FREQ_SISTEMA * t)
+    return (2.0 / N) * np.dot(x, w)
 
-        return {'freqs': freqs, 'mag': mag, 'V1': v1, 'V3': v3, 'THD': thd}
+
+def sym_components(Ia, Ib, Ic):
+    a = np.exp(1j * 2 * np.pi / 3)
+    I0 = (Ia + Ib + Ic) / 3.0
+    I1 = (Ia + a * Ib + a ** 2 * Ic) / 3.0
+    I2 = (Ia + a ** 2 * Ib + a * Ic) / 3.0
+    return I0, I1, I2
+
+
+def fft_v13(v, fs):
+    N = len(v)
+    if N == 0: return 0, 0, 0, [], []
+    freqs = np.fft.rfftfreq(N, d=1 / fs)
+    mag = np.abs(np.fft.rfft(v)) * (2.0 / N)
+
+    idx1 = np.argmin(np.abs(freqs - FREQ_SISTEMA))
+    idx3 = np.argmin(np.abs(freqs - 3 * FREQ_SISTEMA))
+
+    V1 = mag[idx1] if idx1 < len(mag) else 0
+    V3 = mag[idx3] if idx3 < len(mag) else 0
+
+    harmonics_energy = np.sum(mag[1:] ** 2) - V1 ** 2
+    THD = np.sqrt(max(0, harmonics_energy)) / (V1 + 1e-9)
+
+    return V1, V3, THD, freqs, mag
 
 
 # ==============================================================================
-# 3. LEITURA E ESTRUTURAÇÃO DE DADOS (O "CENARIO")
+# 3. LEITURA E PARSING
 # ==============================================================================
 
-def parse_nome_arquivo(nome):
-    nome = nome.lower()
-    topo = 'T2F' if 't2f' in nome else 'MRN'
-    reg = 'sem_regulador' if ('_sr_' in nome or 'sem_reg' in nome or 'semreg' in nome) else 'com_regulador'
-    terra = 'sem_aterramento' if ('sem_terra' in nome or 'semterra' in nome) else 'com_aterramento'
+def extrair_metadados(nome_arquivo):
+    nome = nome_arquivo.lower()
 
-    # Tipo Falta (Dedução básica - ajuste conforme seus nomes reais)
-    if 'abc' in nome:
-        falta = 'ABC'
-    elif 'a-g' in nome or 'ag' in nome or 'a_terra' in nome:
-        falta = 'A_terra'
-    elif 'ab' in nome:
-        falta = 'AB'
-    elif 'bc' in nome:
-        falta = 'BC'
+    # Topologia
+    if "qualificacao" in nome:
+        topologia = "T2F"
+    elif "mrt" in nome:
+        topologia = "MRN"
     else:
-        falta = 'pleno_funcionamento'  # Default se não achar falta
+        topologia = "Outro"
 
-    # Barra da Falta (Assume-se que o nome do arquivo indica onde foi a falta)
-    barra_falta = '820'  # Default
-    if '816' in nome:
-        barra_falta = '816'
-    elif '822' in nome:
-        barra_falta = '822'
+    # Regulador
+    if "_sr_" in nome or "sem_reg" in nome:
+        regulador = "sem_reg"
+    else:
+        regulador = "com_reg"
 
-    return topo, reg, terra, falta, barra_falta
+    # Aterramento
+    if "sem_terra" in nome:
+        aterramento = "sem_terra"
+    else:
+        aterramento = "com_terra"
+
+    # Tipo de Falta
+    if "sem_falta" in nome:
+        tipo_falta = "pleno"
+    elif "falta_abc" in nome:
+        tipo_falta = "ABC"
+    elif "falta_ab" in nome:
+        tipo_falta = "AB"
+    elif "falta_ac" in nome:
+        tipo_falta = "AC"
+    elif "falta_bc" in nome:
+        tipo_falta = "BC"
+    elif "falta_a" in nome:
+        tipo_falta = "A_terra"  # MRT geralmente usa Falta_A
+    else:
+        tipo_falta = "Outro"
+
+    return topologia, regulador, aterramento, tipo_falta
 
 
-def carregar_dados_brutos(caminho):
+def carregar_arquivo_mat(caminho_completo):
+    """Lê arquivo e blinda os dados para evitar erro de dimensão."""
+    dados_barras = {}
+    t = None
+
     try:
-        t, V_dict, I_dict = None, {}, {}
-        # Tenta HDF5
-        with h5py.File(caminho, 'r') as f:
-            for k in f.keys():
-                if 't' == k or 'time' in k: t = f[k][()].flatten()
-                if 'V_' in k and 'raw' in k: V_dict[k] = f[k][()].T
-                if 'I_' in k and 'raw' in k: I_dict[k] = f[k][()].T
-    except:
-        # Tenta MAT
-        mat = sio.loadmat(caminho, squeeze_me=False)
-        for k in mat.keys():
-            if 't' == k or 'time' in k: t = mat[k].flatten()
-            if k.startswith('V_') and 'raw' in k: V_dict[k] = mat[k]
-            if k.startswith('I_') and 'raw' in k: I_dict[k] = mat[k]
-
-    return t, V_dict, I_dict
-
-
-def processar_arquivo_cenario(caminho):
-    topo, reg, terra, falta, b_falta = parse_nome_arquivo(caminho.name)
-    t, V_dict, I_dict = carregar_dados_brutos(caminho)
-
-    if t is None: return None
-
-    # Estrutura do Cenário conforme especificação
-    cenario = {
-        "topologia": topo, "regulador": reg, "aterramento": terra,
-        "tipo_falta": falta, "barra_falta": b_falta, "resultados_por_barra": {}
-    }
-
-    # Processa cada barra encontrada no arquivo
-    barras_interesse = ['800', '816', '820', '822']
-    for b in barras_interesse:
-        # Busca chaves correspondentes (insensível a maiúsculas/minúsculas se necessário)
-        key_v = next((k for k in V_dict if f"_{b}_" in k), None)
-        key_i = next((k for k in I_dict if f"_{b}_" in k), None)
-
-        if key_v and key_i:
-            proc = ProcessadorAvancado(t, V_dict[key_v], I_dict[key_i])
-
-            # --- CÁLCULOS PRÉVIOS (CACHE) ---
-            # 1. RMS
-            v_rms = proc.calcular_rms(proc.v)
-            i_rms = proc.calcular_rms(proc.i)
-
-            # 2. Métricas de Falta (USANDO A CONSTANTE DE TEMPO)
-            t_falta_inicio = INSTANTE_FALTA
-            t_falta_fim = INSTANTE_FALTA + 0.1  # Janela de 100ms
-
-            # Simétricas na falta (pequeno delay para estabilizar após transitório)
-            v_sym = proc.get_sym_components(t_falta_inicio + 0.02)
-            i_sym = proc.get_sym_components(t_falta_inicio + 0.02)
-
-            # FFT na falta
-            fft_data = proc.get_fft_metrics(t_falta_inicio, t_falta_fim)
-
-            # Índices
-            idx_falta = np.searchsorted(proc.t, t_falta_inicio)
-            # Pega o máximo num intervalo após o início da falta
-            janela_max = int(0.1 * proc.fs)
-            if len(i_rms) > idx_falta + janela_max:
-                i_falta_max = np.max(i_rms[idx_falta:idx_falta + janela_max, :])
-            else:
-                i_falta_max = 0
-
-            v2_v1 = (v_sym[2] / v_sym[1]) * 100 if v_sym[1] > 0 else 0
-            v3_v1 = (fft_data['V3'] / fft_data['V1']) * 100 if fft_data and fft_data['V1'] > 0 else 0
-            thd = fft_data['THD'] if fft_data else 0
-
-            cenario["resultados_por_barra"][b] = {
-                "t": proc.t, "v_rms": v_rms, "i_rms": i_rms,
-                "V0_V1_V2": v_sym, "I0_I1_I2": i_sym,
-                "fft_dados": fft_data,
-                "indices": {
-                    "I_falta_max": i_falta_max, "V2_V1_percent": v2_v1,
-                    "V3_V1_percent": v3_v1, "THD_V_percent": thd,
-                    "V1_pu": fft_data['V1'] if fft_data else 0,
-                    "V3_pu": fft_data['V3'] if fft_data else 0
-                }
-            }
-
-    return cenario
-
-
-# ==============================================================================
-# 4. FUNÇÕES GERADORAS (BLOCOS 1 a 5)
-# ==============================================================================
-
-# --- BLOCO 1: RMS (Tensão 820/822 e Corrente 800) ---
-def gerar_bloco_1(lista_cenarios, pasta_saida):
-    print("🔹 Gerando Bloco 1: Gráficos RMS...")
-    subpasta = Path(pasta_saida) / "Bloco1_RMS"
-    subpasta.mkdir(parents=True, exist_ok=True)
-
-    # Agrupar para plotagem
-    cenarios_foco = [c for c in lista_cenarios if c['tipo_falta'] == 'A_terra']
-
-    for c in cenarios_foco:
-        nome_base = f"{c['topologia']}_{c['regulador']}_{c['aterramento']}_{c['tipo_falta']}"
-
-        # 1.1 Tensão RMS 820
-        if '820' in c['resultados_por_barra']:
-            dados = c['resultados_por_barra']['820']
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(dados['t'], dados['v_rms'], label=['Va', 'Vb', 'Vc'])
-
-            # LINHA VERTICAL DA FALTA
-            ax.axvline(x=INSTANTE_FALTA, color='k', linestyle='--', linewidth=1.5, label='Início Falta')
-
-            ax.set_title(f"Tensão RMS 820 - {c['topologia']} {c['regulador']} {c['aterramento']}")
-            ax.set_ylabel("Tensão (V)")
-            ax.set_xlabel("Tempo (s)")
-            plt.legend(loc='best')
-            plt.tight_layout()
-            plt.savefig(subpasta / f"TensaoRMS_barra820_{nome_base}.png")
-            plt.close()
-
-        # 1.2 Corrente RMS 800
-        if '800' in c['resultados_por_barra']:
-            dados = c['resultados_por_barra']['800']
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(dados['t'], dados['i_rms'], label=['Ia', 'Ib', 'Ic'])
-
-            # LINHA VERTICAL DA FALTA
-            ax.axvline(x=INSTANTE_FALTA, color='k', linestyle='--', linewidth=1.5, label='Início Falta')
-
-            ax.set_title(f"Corrente RMS 800 - {c['topologia']} {c['regulador']} {c['aterramento']}")
-            ax.set_ylabel("Corrente (A)")
-            ax.set_xlabel("Tempo (s)")
-            plt.legend(loc='best')
-            plt.tight_layout()
-            plt.savefig(subpasta / f"CorrenteRMS_barra800_{nome_base}.png")
-            plt.close()
-
-
-# --- BLOCO 2: 3ª HARMÔNICA (FFT) ---
-def gerar_bloco_2(lista_cenarios, pasta_saida):
-    print("🔹 Gerando Bloco 2: FFT e Tabela Harmônica...")
-    subpasta = Path(pasta_saida) / "Bloco2_FFT"
-    subpasta.mkdir(parents=True, exist_ok=True)
-
-    tabela_dados = []
-
-    # Foco na barra 820
-    for c in lista_cenarios:
-        if '820' not in c['resultados_por_barra']: continue
-
-        res_barra = c['resultados_por_barra']['820']
-        fft = res_barra['fft_dados']
-        idx = res_barra['indices']
-
-        if fft:
-            # Gráfico
-            fig, ax = plt.subplots(figsize=(10, 5))
-            mask = fft['freqs'] <= 500
-            ax.stem(fft['freqs'][mask], fft['mag'][mask], basefmt=" ", markerfmt="ko", linefmt="k-")
-
-            # Destaques
-            for f_target in [60, 180]:
-                ax.axvline(x=f_target, color='r', linestyle='--', alpha=0.5)
-                # Coloca texto apenas se magnitude for relevante para não poluir
-                if np.max(fft['mag']) > 0:
-                    y_pos = np.max(fft['mag']) * 0.9
-                    ax.text(f_target, y_pos, f"{f_target}Hz", color='r', ha='center', backgroundcolor='white')
-
-            ax.set_title(f"FFT Tensão 820 - {c['topologia']} {c['regulador']} {c['aterramento']}")
-            nome_fig = f"FFT_V_barra820_{c['topologia']}_{c['regulador']}_{c['aterramento']}_{c['tipo_falta']}.png"
-            plt.savefig(subpasta / nome_fig)
-            plt.close()
-
-            # Dados Tabela
-            tabela_dados.append({
-                "topologia": c['topologia'], "regulador": c['regulador'],
-                "aterramento": c['aterramento'], "tipo_falta": c['tipo_falta'],
-                "condicao": "falta", "V1_pu": idx['V1_pu'], "V3_pu": idx['V3_pu'],
-                "V3_V1_percent": idx['V3_V1_percent'], "THD_V_percent": idx['THD_V_percent']
-            })
-
-    # Salva CSV Consolidado
-    if tabela_dados:
-        df = pd.DataFrame(tabela_dados)
-        df.to_csv(subpasta / "Resumo_FFT_tensao_barra820.csv", index=False)
-
-
-# --- BLOCO 3: SIMÉTRICAS ---
-def gerar_bloco_3(lista_cenarios, pasta_saida):
-    print("🔹 Gerando Bloco 3: Componentes Simétricas...")
-    subpasta = Path(pasta_saida) / "Bloco3_Simetricas"
-    subpasta.mkdir(parents=True, exist_ok=True)
-
-    dados_simetricas = []
-
-    # Foco barra 820
-    for c in lista_cenarios:
-        if '820' not in c['resultados_por_barra']: continue
-        res = c['resultados_por_barra']['820']
-
-        v_sym = res['V0_V1_V2']
-        dados_simetricas.append({
-            "id_cenario": f"{c['topologia']}_{c['regulador'][:3]}_{c['aterramento'][:3]}",  # Label curto
-            "V0": v_sym[0], "V1": v_sym[1], "V2": v_sym[2],
-            "tipo_falta": c['tipo_falta']
-        })
-
-    df = pd.DataFrame(dados_simetricas)
-    if df.empty: return
-
-    # Gráficos por tipo de falta
-    for falta in df['tipo_falta'].unique():
-        df_falta = df[df['tipo_falta'] == falta]
-        if df_falta.empty: continue
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        x = np.arange(len(df_falta))
-        w = 0.25
-
-        ax.bar(x - w, df_falta['V0'], w, label='V0 (Zero)', color='gray')
-        ax.bar(x, df_falta['V1'], w, label='V1 (Pos)', color='blue')
-        ax.bar(x + w, df_falta['V2'], w, label='V2 (Neg)', color='red')
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(df_falta['id_cenario'], rotation=45, ha='right')
-        ax.set_title(f"Componentes Simétricas (Tensão) - Falta {falta}")
-        ax.legend()
-        plt.tight_layout()
-        plt.savefig(subpasta / f"Simetricas_V_barra820_{falta}.png")
-        plt.close()
-
-
-# --- BLOCO 4: COMPARAÇÃO T2F vs MRN ---
-# --- BLOCO 4: COMPARAÇÃO T2F vs MRN ---
-def gerar_bloco_4(lista_cenarios, pasta_saida):
-    print("🔹 Gerando Bloco 4: Comparativo T2F vs MRN...")
-    subpasta = Path(pasta_saida) / "Bloco4_Comparativo"
-    subpasta.mkdir(parents=True, exist_ok=True)
-
-    # Filtro: Com Regulador e Com Aterramento (conforme spec)
-    filtro = lambda c: c['regulador'] == 'com_regulador' and c['aterramento'] == 'com_aterramento'
-    cenarios_validos = [c for c in lista_cenarios if filtro(c)]
-
-    comparativo = []
-    for c in cenarios_validos:
-        if '820' in c['resultados_por_barra'] and '822' in c['resultados_por_barra']:
-            comparativo.append({
-                "topologia": c['topologia'],
-                "tipo_falta": c['tipo_falta'],
-                "I_falta_820": c['resultados_por_barra']['820']['indices']['I_falta_max'],
-                "V2_V1_822": c['resultados_por_barra']['822']['indices']['V2_V1_percent']
-            })
-
-    df = pd.DataFrame(comparativo)
-    if df.empty: return
-
-    # --- CORREÇÃO DE DUPLICATAS ---
-    # Verifica se existem duplicatas para avisar o usuário
-    duplicatas = df[df.duplicated(subset=['tipo_falta', 'topologia'], keep=False)]
-    if not duplicatas.empty:
-        print(f"⚠️ AVISO: Encontradas {len(duplicatas)} entradas duplicadas no Bloco 4.")
-        print("   -> O código usará a MÉDIA dos valores para esses casos.")
-        # print(duplicatas) # Descomente se quiser ver quais são
-
-    # Gráfico 4.1: Corrente de Falta (Agrupado por Tipo Falta)
-    # Mudamos de .pivot() para .pivot_table() com aggfunc='mean'
-    pivot_i = df.pivot_table(index='tipo_falta', columns='topologia', values='I_falta_820', aggfunc='mean')
-
-    if not pivot_i.empty:
-        pivot_i.plot(kind='bar', figsize=(10, 6), color=[CORES['MRN'], CORES['T2F']])
-        plt.title("Corrente Máxima de Falta (820) - MRN vs T2F")
-        plt.ylabel("Corrente (A)")
-        plt.tight_layout()
-        plt.savefig(subpasta / "Ifalta_barra820_MRN_vs_T2F.png")
-        plt.close()
-
-    # Gráfico 4.2: Desequilíbrio (Agrupado por Tipo Falta)
-    pivot_v = df.pivot_table(index='tipo_falta', columns='topologia', values='V2_V1_822', aggfunc='mean')
-
-    if not pivot_v.empty:
-        pivot_v.plot(kind='bar', figsize=(10, 6), color=[CORES['MRN'], CORES['T2F']])
-        plt.title("Desequilíbrio V2/V1 (822) - MRN vs T2F")
-        plt.ylabel("Desequilíbrio (%)")
-        plt.tight_layout()
-        plt.savefig(subpasta / "DesequilibrioV_barra822_MRN_vs_T2F.png")
-        plt.close()
-
-
-# --- BLOCO 5: PAPEL DO REGULADOR ---
-def gerar_bloco_5(lista_cenarios, pasta_saida):
-    print("🔹 Gerando Bloco 5: Perfil de Tensão e Regulador...")
-    subpasta = Path(pasta_saida) / "Bloco5_Regulador"
-    subpasta.mkdir(parents=True, exist_ok=True)
-
-    # 5.1 Perfil em Pleno Funcionamento
-    cenarios_pleno = [c for c in lista_cenarios if c['tipo_falta'] == 'pleno_funcionamento']
-
-    if cenarios_pleno:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        barras = ['800', '816', '820', '822']
-        x = range(len(barras))
-
-        for c in cenarios_pleno:
-            vals = []
-            for b in barras:
-                if b in c['resultados_por_barra']:
-                    # Média RMS (assumindo regime permanente estável)
-                    v_med = np.mean(c['resultados_por_barra'][b]['v_rms'])
-                    vals.append(v_med)
-                else:
-                    vals.append(None)
-
-            label = f"{c['topologia']} {c['regulador']}"
-            ls = '-' if c['regulador'] == 'com_regulador' else '--'
-            color = CORES['MRN'] if c['topologia'] == 'MRN' else CORES['T2F']
-
-            if None not in vals:
-                ax.plot(x, vals, marker='o', label=label, linestyle=ls, color=color)
-
-        ax.set_xticks(x);
-        ax.set_xticklabels(barras)
-        ax.set_title("Perfil de Tensão - Pleno Funcionamento")
-        ax.set_ylabel("Tensão Média (V)")
-        plt.legend()
-        plt.savefig(subpasta / "PerfilTensao_plenoFunc.png")
-        plt.close()
-
-
-# ==============================================================================
-# 5. EXECUÇÃO PRINCIPAL
-# ==============================================================================
-
-def main():
-    # 🔧 CONFIGURAÇÃO DO CAMINHO
-    PASTA_MAT = r"C:/Users/Leonardo Felipe/OneDrive/Coisas_Leonardo/gits/CurtosT2F/T2F_MATLAB/NovoArtigoPowerDelivery34bus/NovoModeloQualificacao/Teste_Novo_Sem_Terra_14/Processados_HDF5/"
-    PASTA_RESULTADOS = "./Resultados_Secao4_Analise_Tese"
-    Path(PASTA_RESULTADOS).mkdir(parents=True, exist_ok=True)
-
-    arquivos = list(Path(PASTA_MAT).glob("*.mat"))
-    print(f"🚀 Iniciando processamento de {len(arquivos)} cenários...")
-
-    # 1. Carregar e Processar Tudo
-    lista_cenarios = []
-    for arq in arquivos:
+        # Tenta h5py
+        with h5py.File(caminho_completo, 'r') as f:
+            keys = list(f.keys())
+            for k in keys:
+                if 'time' in k or k == 't':
+                    t = np.array(f[k]).flatten()
+                    break
+
+            for barra in BARRAS_DISPONIVEIS:
+                # Busca flexível de chaves
+                v_key = next((k for k in keys if f"V_{barra}" in k and "raw" not in k), None)
+                if not v_key: v_key = next((k for k in keys if f"V_{barra}" in k), None)
+
+                i_key = next((k for k in keys if f"I_{barra}" in k and "raw" not in k), None)
+                if not i_key: i_key = next((k for k in keys if f"I_{barra}" in k), None)
+
+                if v_key and i_key:
+                    V = garantir_shape_3fases(f[v_key])
+                    I = garantir_shape_3fases(f[i_key])
+
+                    if t is not None:
+                        # Corta para o menor tamanho para evitar mismatch
+                        L = min(len(t), len(V), len(I))
+                        if L > 10:  # Só aceita se tiver dados suficientes
+                            dados_barras[barra] = {"V": V[:L], "I": I[:L], "t": t[:L]}
+
+    except OSError:
+        # Tenta scipy.io
         try:
-            cenario = processar_arquivo_cenario(arq)
-            if cenario:
-                lista_cenarios.append(cenario)
-                print(f"   -> Processado: {cenario['topologia']} {cenario['regulador']} {cenario['tipo_falta']}")
+            mat = sio.loadmat(caminho_completo)
+            keys = list(mat.keys())
+            for k in keys:
+                if 'time' in k or k == 't':
+                    t = mat[k].flatten()
+                    break
+
+            for barra in BARRAS_DISPONIVEIS:
+                v_key = next((k for k in keys if f"V_{barra}" in k), None)
+                i_key = next((k for k in keys if f"I_{barra}" in k), None)
+
+                if v_key and i_key:
+                    V = garantir_shape_3fases(mat[v_key])
+                    I = garantir_shape_3fases(mat[i_key])
+
+                    if t is not None:
+                        L = min(len(t), len(V), len(I))
+                        if L > 10:
+                            dados_barras[barra] = {"V": V[:L], "I": I[:L], "t": t[:L]}
         except Exception as e:
-            print(f"   ❌ Erro em {arq.name}: {e}")
+            print(f"Erro leitura {caminho_completo}: {e}")
+            return None, None
 
-    print(f"\n✅ {len(lista_cenarios)} cenários carregados. Gerando Blocos de Análise...\n")
+    return t, dados_barras
 
-    # 2. Gerar Blocos
-    if lista_cenarios:
-        gerar_bloco_1(lista_cenarios, PASTA_RESULTADOS)
-        gerar_bloco_2(lista_cenarios, PASTA_RESULTADOS)
-        gerar_bloco_3(lista_cenarios, PASTA_RESULTADOS)
-        gerar_bloco_4(lista_cenarios, PASTA_RESULTADOS)
-        gerar_bloco_5(lista_cenarios, PASTA_RESULTADOS)
 
-        # 3. Exportar Tabela Mestra (Resumo Geral)
-        tabela_mestra = []
-        for c in lista_cenarios:
-            if '820' in c['resultados_por_barra']:
-                idx = c['resultados_por_barra']['820']['indices']
-                tabela_mestra.append({
-                    "topologia": c['topologia'], "regulador": c['regulador'],
-                    "aterramento": c['aterramento'], "tipo_falta": c['tipo_falta'],
-                    "barra": "820",
-                    "I_falta_max": idx['I_falta_max'], "V2_V1": idx['V2_V1_percent'],
-                    "V3_V1": idx['V3_V1_percent'], "THD": idx['THD_V_percent']
-                })
-        pd.DataFrame(tabela_mestra).to_csv(Path(PASTA_RESULTADOS) / "Resumo_Geral_Cenarios.csv", index=False)
-        print("\n🏆 Processamento Completo! Verifique a pasta 'Resultados_Secao4_Analise_Tese_v2'.")
+def carregar_todos_cenarios():
+    cenarios = {}
+    arquivos = [f for f in os.listdir(PASTA_DADOS) if f.endswith('.mat')]
+    print(f"📂 Encontrados {len(arquivos)} arquivos na pasta.")
 
+    for nome_arq in arquivos:
+        topo, reg, terra, falta = extrair_metadados(nome_arq)
+        caminho = os.path.join(PASTA_DADOS, nome_arq)
+
+        _, dados_barras = carregar_arquivo_mat(caminho)
+
+        if dados_barras:
+            # Pega fs de uma barra qualquer
+            exemplo = next(iter(dados_barras.values()))
+            dt = exemplo['t'][1] - exemplo['t'][0]
+            fs = 1.0 / dt if dt > 0 else 60 * 200
+
+            chave = (topo, reg, terra, falta)
+
+            # Se a chave já existe (ex: arquivos quebrados em partes), mesclar seria ideal
+            # Mas aqui vamos sobrescrever ou ignorar para simplificar, ou avisar
+            if chave not in cenarios:
+                cenarios[chave] = {"barras": dados_barras, "fs": fs, "arq": nome_arq}
+            else:
+                # Merge de barras se forem arquivos complementares
+                cenarios[chave]["barras"].update(dados_barras)
+
+    print(f"✅ Cenários únicos identificados: {len(cenarios)}")
+    return cenarios
+
+
+# ==============================================================================
+# 4. FUNÇÕES DE GERAÇÃO (FIGURAS DA TESE)
+# ==============================================================================
+
+def gerar_figura_4_4(cenarios, pasta_saida):
+    print("Gerando Fig 4.4 (Perfil Tensão)...")
+    res = []
+    plt.figure(figsize=(10, 6))
+
+    configs = [('MRN', 'com_reg', '-o'), ('MRN', 'sem_reg', '--s'),
+               ('T2F', 'com_reg', '-^'), ('T2F', 'sem_reg', '--v')]
+
+    # Eixo X base (todas as barras desejadas)
+    barras_ordenadas = ["800", "818", "820", "822", "T2F1", "T2F"]
+
+    for topo, reg, style in configs:
+        # Busca cenário "pleno" ou "sem_falta"
+        keys = [(topo, reg, 'com_terra', 'pleno'), (topo, reg, 'com_terra', 'Outro')]
+        key = next((k for k in keys if k in cenarios), None)
+
+        if key:
+            x_vals, y_vals = [], []
+            for barra in barras_ordenadas:
+                # Pula barras T2F se for topologia MRN
+                if topo == "MRN" and "T2F" in barra: continue
+
+                if barra in cenarios[key]['barras']:
+                    d = cenarios[key]['barras'][barra]
+                    # Média RMS do final (regime permanente)
+                    n_pts = int(4 * cenarios[key]['fs'] / 60)
+                    if len(d['V']) > n_pts:
+                        V_win = d['V'][-n_pts:, :]
+                        v_med = np.mean([rms(V_win[:, 0]), rms(V_win[:, 1]), rms(V_win[:, 2])])
+
+                        x_vals.append(barra)
+                        y_vals.append(v_med)
+                        res.append({'Topo': topo, 'Reg': reg, 'Barra': barra, 'VRMS': v_med})
+
+            if x_vals:
+                plt.plot(x_vals, y_vals, style, label=f"{topo} {reg}", color=CORES[topo])
+
+    plt.title("Perfil de Tensão RMS - Regime Permanente")
+    plt.ylabel("Tensão (V)")
+    plt.legend()
+    plt.savefig(os.path.join(pasta_saida, "Fig4_4_Perfil.png"))
+    plt.close()
+    if res: pd.DataFrame(res).to_csv(os.path.join(pasta_saida, "Tab4_4.csv"), index=False)
+
+
+def gerar_figura_4_6(cenarios, pasta_saida):
+    """Gera Fig 4.6 (Tensão RMS no tempo) para TODAS as barras."""
+    print("Gerando Fig 4.6 (RMS Tempo)...")
+    falta = 'A_terra'
+    reg = 'com_reg'
+
+    # Itera sobre todas as barras disponíveis no sistema
+    for barra in BARRAS_DISPONIVEIS:
+        fig, axs = plt.subplots(2, 2, figsize=(12, 10), sharex=True, sharey=True)
+        configs = [('MRN', 'com_terra'), ('MRN', 'sem_terra'),
+                   ('T2F', 'com_terra'), ('T2F', 'sem_terra')]
+
+        plotted_any = False
+        for ax, (topo, terra) in zip(axs.flatten(), configs):
+            key = (topo, reg, terra, falta)
+
+            if key in cenarios and barra in cenarios[key]['barras']:
+                d = cenarios[key]['barras'][barra]
+                win = int(cenarios[key]['fs'] / 60)
+
+                # Cálculo RMS seguro
+                try:
+                    vrms_a = rms_deslizante(d['V'][:, 0], win)
+                    vrms_b = rms_deslizante(d['V'][:, 1], win)
+                    vrms_c = rms_deslizante(d['V'][:, 2], win)
+
+                    ax.plot(d['t'], vrms_a, 'b', label='Va')
+                    ax.plot(d['t'], vrms_b, 'r', label='Vb')
+                    ax.plot(d['t'], vrms_c, 'g', label='Vc')
+                    ax.axvline(INSTANTE_FALTA, color='k', linestyle='--')
+                    ax.set_title(f"{topo} {terra}")
+                    if ax == axs[0, 0]: ax.legend(loc='lower left', fontsize='x-small')
+                    plotted_any = True
+                except Exception as e:
+                    ax.text(0.5, 0.5, "Erro dados", ha='center')
+            else:
+                ax.text(0.5, 0.5, "N/A", ha='center')  # Ex: T2F1 no MRN
+
+        if plotted_any:
+            fig.suptitle(f"Tensão RMS - Barra {barra} - Falta {falta}")
+            plt.tight_layout()
+            plt.savefig(os.path.join(pasta_saida, f"Fig4_6_Tensao_{barra}.png"))
+        plt.close()
+
+
+def gerar_figura_4_12(cenarios, pasta_saida):
+    """Fig 4.12: Corrente Máxima por Tipo de Falta (Todas as Barras)."""
+    print("Gerando Fig 4.12 (Correntes Máximas)...")
+    tipos = ['ABC', 'A_terra', 'AB', 'BC']
+    terra = 'com_terra'
+
+    # Para cada barra, um gráfico
+    for barra in BARRAS_DISPONIVEIS:
+        res = []
+        for f in tipos:
+            for topo in ['MRN', 'T2F']:
+                for reg in ['com_reg', 'sem_reg']:
+                    key = (topo, reg, terra, f)
+                    if key in cenarios and barra in cenarios[key]['barras']:
+                        d = cenarios[key]['barras'][barra]
+                        fs = cenarios[key]['fs']
+
+                        # Janela de falta (100ms após instante)
+                        idx_falta = indice_falta(d['t'])
+                        win_falta = int(0.1 * fs)
+                        end = min(len(d['t']), idx_falta + win_falta)
+
+                        if end > idx_falta:
+                            I_seg = d['I'][idx_falta:end]
+                            # RMS máximo de qualquer fase na janela
+                            # Aproximação rápida: max do valor absoluto / sqrt(2) ou RMS deslizante
+                            # Vamos usar o pico do RMS deslizante
+                            win_rms = int(fs / 60)
+                            imaxs = [np.max(rms_deslizante(I_seg[:, i], win_rms)) for i in range(3)]
+                            res.append({'Falta': f, 'Cenario': f"{topo} {reg}", 'Imax': max(imaxs)})
+
+        if res:
+            df = pd.DataFrame(res)
+            pivot = df.pivot_table(index='Falta', columns='Cenario', values='Imax', aggfunc='max')
+            if not pivot.empty:
+                pivot.plot(kind='bar', figsize=(10, 6))
+                plt.title(f"Corrente Máxima de Falta - Barra {barra}")
+                plt.ylabel("Corrente (A)")
+                plt.tight_layout()
+                plt.savefig(os.path.join(pasta_saida, f"Fig4_12_Imax_{barra}.png"))
+                plt.close()
+
+
+def gerar_comparativo_especifico_MRT_A_vs_T2F_AB(cenarios, pasta_saida):
+    """
+    Gera gráficos comparando especificamente:
+    1. MRT (MRN) - Falta A-Terra
+    2. T2F       - Falta AB (Fase-Fase)
+    """
+    print("\n🔹 Gerando Comparativo Especial: MRT (Falta A) vs T2F (Falta AB)...")
+
+    # Garante que Path está importado
+    from pathlib import Path
+
+    pasta_comp = Path(pasta_saida) / "_COMPARATIVO_ESPECIAL_MRT_A_vs_T2F_AB"
+    pasta_comp.mkdir(parents=True, exist_ok=True)
+
+    # --- DEFINIÇÃO DAS CHAVES DOS CENÁRIOS ---
+    key_mrt = ('MRN', 'com_reg', 'com_terra', 'A_terra')
+    key_t2f = ('T2F', 'com_reg', 'com_terra', 'AB')
+
+    # Verifica existência
+    if key_mrt not in cenarios:
+        print(f"⚠️ Cenário MRT {key_mrt} não encontrado.")
+        return
+    if key_t2f not in cenarios:
+        print(f"⚠️ Cenário T2F {key_t2f} não encontrado.")
+        return
+
+    barras_foco = ['820', '800']
+
+    for barra in barras_foco:
+        if barra not in cenarios[key_mrt]['barras'] or barra not in cenarios[key_t2f]['barras']:
+            continue
+
+        d_mrt = cenarios[key_mrt]['barras'][barra]
+        d_t2f = cenarios[key_t2f]['barras'][barra]
+
+        fs_mrt = cenarios[key_mrt]['fs']
+        fs_t2f = cenarios[key_t2f]['fs']
+
+        win_mrt = int(fs_mrt / 60)
+        win_t2f = int(fs_t2f / 60)
+
+        # --- GRÁFICO 1: CORRENTES RMS ---
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        i_rms_mrt = rms_deslizante(d_mrt['I'][:, 0], win_mrt)
+
+        # T2F: Máximo entre A e B
+        i_rms_t2f_A = rms_deslizante(d_t2f['I'][:, 0], win_t2f)
+        i_rms_t2f_B = rms_deslizante(d_t2f['I'][:, 1], win_t2f)
+        i_rms_t2f_max = np.maximum(i_rms_t2f_A, i_rms_t2f_B)
+
+        L = min(len(d_mrt['t']), len(d_t2f['t']))
+        t_plot = d_mrt['t'][:L]
+
+        ax.plot(t_plot, i_rms_mrt[:L], label='MRT (Falta A-G) - Fase A',
+                color=CORES['MRN'], linewidth=2.5)
+        ax.plot(t_plot, i_rms_t2f_max[:L], label='T2F (Falta AB) - Máx(IA, IB)',
+                color=CORES['T2F'], linewidth=2.5, linestyle='--')
+
+        ax.axvline(x=INSTANTE_FALTA, color='k', linestyle=':', alpha=0.6)
+
+        pico_mrt = np.max(i_rms_mrt)
+        pico_t2f = np.max(i_rms_t2f_max)
+
+        ax.set_title(f"Comparação de Corrente - Barra {barra}\nMRT (Mono) vs T2F (Bifásico)")
+        ax.set_ylabel("Corrente RMS (A)")
+        ax.set_xlabel("Tempo (s)")
+        ax.legend()
+
+        ax.text(0.02, 0.95, f"Pico MRT: {pico_mrt:.1f} A\nPico T2F: {pico_t2f:.1f} A",
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        # SALVAMENTO DIRETO (CORREÇÃO DO ERRO)
+        fig.savefig(pasta_comp / f"Comparativo_Corrente_Barra_{barra}.png", bbox_inches='tight')
+        plt.close(fig)
+
+        # --- GRÁFICO 2: TENSÕES RMS ---
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+
+        v_mrt_a = rms_deslizante(d_mrt['V'][:, 0], win_mrt)
+        v_mrt_b = rms_deslizante(d_mrt['V'][:, 1], win_mrt)
+        v_mrt_c = rms_deslizante(d_mrt['V'][:, 2], win_mrt)
+
+        ax1.plot(d_mrt['t'], v_mrt_a, color='blue', label='Va (Faltosa)')
+        ax1.plot(d_mrt['t'], v_mrt_b, color='red', alpha=0.5, label='Vb')
+        ax1.plot(d_mrt['t'], v_mrt_c, color='green', alpha=0.5, label='Vc')
+        ax1.set_title("MRT - Falta A-Terra")
+        ax1.legend(fontsize='small')
+
+        v_t2f_a = rms_deslizante(d_t2f['V'][:, 0], win_t2f)
+        v_t2f_b = rms_deslizante(d_t2f['V'][:, 1], win_t2f)
+        v_t2f_c = rms_deslizante(d_t2f['V'][:, 2], win_t2f)
+
+        ax2.plot(d_t2f['t'], v_t2f_a, color='blue', label='Va (Faltosa)')
+        ax2.plot(d_t2f['t'], v_t2f_b, color='red', label='Vb (Faltosa)')
+        ax2.plot(d_t2f['t'], v_t2f_c, color='green', alpha=0.5, label='Vc (Sã)')
+        ax2.set_title("T2F - Falta AB")
+        ax2.legend(fontsize='small')
+
+        fig.suptitle(f"Impacto na Tensão - Barra {barra}")
+        plt.tight_layout()
+
+        # SALVAMENTO DIRETO (CORREÇÃO DO ERRO)
+        fig.savefig(pasta_comp / f"Comparativo_Tensao_Barra_{barra}.png", bbox_inches='tight')
+        plt.close(fig)
+
+    print("✅ Comparativo Especial concluído.")
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
 
 if __name__ == "__main__":
-    main()
+    PASTA_RESULTADOS = "Resultados_Tese_Corrigido_vFinal"
+    if not os.path.exists(PASTA_RESULTADOS): os.makedirs(PASTA_RESULTADOS)
+
+    cenarios = carregar_todos_cenarios()
+
+    if cenarios:
+        gerar_figura_4_4(cenarios, PASTA_RESULTADOS)
+        gerar_figura_4_6(cenarios, PASTA_RESULTADOS)
+        gerar_figura_4_12(cenarios, PASTA_RESULTADOS)
+        gerar_comparativo_especifico_MRT_A_vs_T2F_AB(cenarios, PASTA_RESULTADOS)
+
+        # Você pode adicionar as chamadas para 4.5, 4.7, etc. aqui seguindo o modelo da 4.6
+        # Elas vão funcionar pois a lógica de "t existe se V existe" está garantida.
+
+        print("\n✅ Processamento Concluído! Verifique a pasta de resultados.")
