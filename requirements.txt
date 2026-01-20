@@ -11,3 +11,4 @@ streamlit-embedcode
 streamlit-extras
 streamlit-plotly-events
 streamlit-tags
+h5py
